@@ -47,12 +47,12 @@ Hard rules:
 var CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 var CONSTANCE_APP_ID = "culebra-ai-spell-correct";
 var CONSTANCE_PRICE_IDS = {
-  usd_001: "PENDING_PROVISIONING",
-  // $1  -> 100 corrections
-  usd_005: "PENDING_PROVISIONING",
-  // $5  -> 600 corrections
-  usd_015: "PENDING_PROVISIONING"
-  // $15 -> 2000 corrections
+  usd_001: "pri_01m0b7grv1cmt42gqfpc0v835k",
+  // $1  -> 20,000 characters
+  usd_005: "pri_01m0b7gsghrh315zvfxnxx4w38",
+  // $5  -> 160,000 characters
+  usd_015: "pri_01m0b7gt2jyj6s2a6dpkdvfdsr"
+  // $15 -> 640,000 characters
 };
 function generateSecureDeviceId() {
   const bytes = new Uint8Array(16);
@@ -130,7 +130,7 @@ var DEFAULT_SETTINGS = {
   apiKey: "",
   constanceDeviceId: "",
   billingEmail: "",
-  freeCredits: 15,
+  freeCredits: 2e3,
   purchasedCredits: 0
 };
 var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
@@ -189,6 +189,10 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       return;
     }
     const priceId = CONSTANCE_PRICE_IDS[tier];
+    if (!priceId || priceId === "PENDING_PROVISIONING") {
+      new import_obsidian.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
+      return;
+    }
     const params = new URLSearchParams({
       app_id: CONSTANCE_APP_ID,
       price_id: priceId,
@@ -215,13 +219,14 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
    * pool. Returns false (and shows a Notice) only when both are confirmed
    * exhausted; a network/error response fails open per Antero's policy.
    */
-  async chargeOneCredit() {
-    if (this.settings.freeCredits > 0) {
-      this.settings.freeCredits -= 1;
+  async chargeOneCredit(textLength) {
+    const cost = Math.max(1, Math.ceil(textLength / 1e3));
+    if (this.settings.freeCredits >= cost) {
+      this.settings.freeCredits -= cost;
       await this.saveSettings();
       return true;
     }
-    const result = await spendConstanceCredits(this.settings.constanceDeviceId, 1);
+    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost);
     if (result.kind === "ok") {
       this.settings.purchasedCredits = result.balance;
       await this.saveSettings();
@@ -230,7 +235,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     if (result.kind === "insufficient") {
       this.settings.purchasedCredits = 0;
       await this.saveSettings();
-      new import_obsidian.Notice("Culebra: out of credits. Buy more in plugin settings (Buy $1 / $5 / $15).");
+      new import_obsidian.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
       return false;
     }
     console.warn("Culebra: credit spend check failed; proceeding and will reconcile on next sync.");
@@ -271,7 +276,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("Add your OpenRouter API key in Culebra settings before correcting text.");
       return null;
     }
-    const charged = await this.chargeOneCredit();
+    const charged = await this.chargeOneCredit(originalText.length);
     if (!charged) {
       return null;
     }
@@ -348,7 +353,7 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     }
     containerEl.createEl("h3", { text: "Credits & billing" });
     containerEl.createEl("p", {
-      text: "Each correction costs 1 credit. New installs start with 15 free credits; buy more below when you run out."
+      text: "Each correction costs 1 credit per 1,000 characters. New installs start with 2,000 free characters; buy more below when you run out."
     });
     this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
     this.renderCreditsSummary();
@@ -359,15 +364,15 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Buy credits").setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.").addButton(
-      (button) => button.setButtonText("Buy $1 (100 corrections)").onClick(() => {
+      (button) => button.setButtonText("Buy $1 (20,000 characters)").onClick(() => {
         this.plugin.openBuyCheckout("usd_001");
       })
     ).addButton(
-      (button) => button.setButtonText("Buy $5 (600 corrections)").onClick(() => {
+      (button) => button.setButtonText("Buy $5 (160,000 characters)").onClick(() => {
         this.plugin.openBuyCheckout("usd_005");
       })
     ).addButton(
-      (button) => button.setButtonText("Buy $15 (2000 corrections)").onClick(() => {
+      (button) => button.setButtonText("Buy $15 (640,000 characters)").onClick(() => {
         this.plugin.openBuyCheckout("usd_015");
       })
     );
@@ -388,8 +393,9 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
       return;
     }
     const { freeCredits, purchasedCredits } = this.plugin.settings;
+    const totalChars = freeCredits + purchasedCredits;
     this.creditsSummaryEl.setText(
-      `Credits remaining: ${freeCredits + purchasedCredits} (${freeCredits} free + ${purchasedCredits} purchased)`
+      `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`
     );
   }
 };
