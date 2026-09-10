@@ -2,20 +2,23 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
+Version: `4.4.1` · [Complete user guide](./docs/USER_GUIDE.md)
+
 ## Features
 
 - Correct selected text, the current note, or a Markdown file from its context menu.
 - Preserve headings, lists, tables, links, tags, code, frontmatter, wiki links, embeds, and callouts.
 - Preserve Indian names, places, organizations, Indian English wording, and culturally specific terms.
 - Choose the OpenRouter model used for corrections.
-- Start with 15 free corrections per installation.
+- Start with 2,000 free characters per installation.
 
 ## Usage
 
 1. Install and enable Culebra AI Spell Correct.
 2. Select text in a note, or place the cursor in a note.
-3. Open the editor context menu and choose **Culebra AI Spell Correct**. You can also use the command palette and choose **Culebra AI Spell Correct**.
-4. Configure the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**.
+3. Open the editor context menu and choose **Culebra: Correct selected text** or **Culebra: Correct current note**. You can also use the command palette and choose **Culebra: Correct selection or current note**.
+4. Review the before-and-after preview, then choose **Apply correction**. Cancel leaves your note unchanged; editor changes can be undone with Ctrl/Cmd+Z.
+5. Configure the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
 
 When text is selected, only the selection is replaced. With no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
 
@@ -24,9 +27,9 @@ When text is selected, only the selection is replaced. With no selection, the cu
 Culebra requires network access to provide AI correction and optional credit management:
 
 - The text being corrected is sent to the OpenRouter chat completions API at `https://openrouter.ai/api/v1/chat/completions`. OpenRouter forwards the request to the model selected in the plugin settings. Do not submit confidential text unless you are comfortable sending it to these services.
-- Users provide their own OpenRouter API key in the plugin settings. The key is stored in the vault's local plugin data and sent only as authorization to OpenRouter.
+- A user-supplied OpenRouter API key in the plugin settings takes precedence and is stored in local plugin data. If the field is blank, Culebra may use its built-in encrypted key fallback. The key is sent only as authorization to OpenRouter.
 - The plugin contacts TutivSoft Constance at `https://app.tutivsoft.com` to check and spend purchased correction credits. It sends the plugin ID, a randomly generated installation device ID, and credit transaction data. The device ID is stored in the plugin's local settings.
-- Buying credits opens the TutivSoft billing page in the user's browser. A billing email is used for the purchase receipt. Payment is optional; the initial 15 local credits can be used without an account or payment.
+- Buying credits opens the TutivSoft billing page in the user's browser. A billing email is used for the purchase receipt. Payment is optional; the initial 2,000 local characters can be used without an account or payment.
 
 The plugin does not include client-side telemetry, advertising, self-updating, dependency installation, or access to files outside the current Obsidian vault. It does not collect or transmit note content except when the user explicitly invokes correction.
 

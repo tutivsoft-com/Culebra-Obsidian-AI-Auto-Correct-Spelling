@@ -28,7 +28,104 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
-var DEFAULT_MODEL = "openai/gpt-5-mini";
+var DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
+var REMOTE_MANIFEST_PASSPHRASE = "Kivu.RemoteKeyManifest.v1.2026D";
+var REMOTE_MANIFEST_URL = "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/tool-app-Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+async function decryptSecretEnvelope(envelope, passphrase) {
+  if (envelope.x !== "AES-256-GCM" || envelope.w !== "PBKDF2-HMAC-SHA256") {
+    throw new Error(`Unsupported manifest envelope algorithm/kdf: ${envelope.x} / ${envelope.w}`);
+  }
+  const keyMaterial = await window.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(passphrase),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  const key = await window.crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToBytes(envelope.a),
+      iterations: envelope.n,
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+  const ciphertext = base64ToBytes(envelope.c);
+  const tag = base64ToBytes(envelope.d);
+  const ciphertextAndTag = new Uint8Array(new ArrayBuffer(ciphertext.length + tag.length));
+  ciphertextAndTag.set(ciphertext, 0);
+  ciphertextAndTag.set(tag, ciphertext.length);
+  const plaintext = await window.crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(envelope.b) },
+    key,
+    ciphertextAndTag
+  );
+  return new TextDecoder().decode(plaintext);
+}
+function selectSlot(manifest, wantState) {
+  var _a;
+  const byMarker = manifest.r.find((slot) => slot.ii === wantState);
+  if (byMarker) {
+    return byMarker;
+  }
+  const fallbackState = wantState === "active" ? "0" : "1";
+  return (_a = manifest.r.find((slot) => slot.s === fallbackState)) != null ? _a : null;
+}
+async function fetchRemoteManifest(url) {
+  const response = await (0, import_obsidian.requestUrl)({ url, method: "GET", throw: false });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Manifest fetch failed: HTTP ${response.status}`);
+  }
+  return response.json;
+}
+async function tryDecryptManifestKey(manifest, source) {
+  const active = selectSlot(manifest, "active");
+  if (active) {
+    try {
+      const key = (await decryptSecretEnvelope(active.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
+      if (key) return key;
+    } catch (error) {
+      console.warn("Culebra: active manifest slot failed to decrypt", source, error);
+    }
+  }
+  const next = selectSlot(manifest, "next");
+  if (next) {
+    try {
+      const key = (await decryptSecretEnvelope(next.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
+      if (key) return key;
+    } catch (error) {
+      console.warn("Culebra: next manifest slot failed to decrypt", source, error);
+    }
+  }
+  throw new Error("Remote key manifest did not decrypt to a usable key.");
+}
+async function fetchRemoteApiKey() {
+  try {
+    const manifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL);
+    return await tryDecryptManifestKey(manifest, REMOTE_MANIFEST_URL);
+  } catch (primaryError) {
+    console.warn("Culebra: primary manifest failed, trying next-manifest fallback", primaryError);
+    const primaryManifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL).catch(() => null);
+    const nextUrl = primaryManifest == null ? void 0 : primaryManifest.n;
+    if (nextUrl && nextUrl !== REMOTE_MANIFEST_URL) {
+      const nextManifest = await fetchRemoteManifest(nextUrl);
+      return await tryDecryptManifestKey(nextManifest, nextUrl);
+    }
+    throw primaryError;
+  }
+}
 var SPELL_CORRECT_INSTRUCTIONS = `You are Culebra AI Spell Correct, a careful copy editor for an Obsidian Markdown vault.
 
 Task:
@@ -131,12 +228,28 @@ var DEFAULT_SETTINGS = {
   constanceDeviceId: "",
   billingEmail: "",
   freeCredits: 2e3,
-  purchasedCredits: 0
+  purchasedCredits: 0,
+  onboardingSeen: false
 };
 var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    // Cached once resolved so every correction doesn't re-fetch the manifest;
+    // cleared and retried on failure in case the key was rotated mid-session.
+    this.remoteApiKeyCache = null;
+  }
+  async resolveApiKey() {
+    const manualKey = this.settings.apiKey.trim();
+    if (manualKey) {
+      return manualKey;
+    }
+    if (this.remoteApiKeyCache) {
+      return this.remoteApiKeyCache;
+    }
+    const key = await fetchRemoteApiKey();
+    this.remoteApiKeyCache = key;
+    return key;
   }
   async onload() {
     await this.loadSettings();
@@ -144,10 +257,16 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       this.settings.constanceDeviceId = generateSecureDeviceId();
       await this.saveSettings();
     }
+    if (!this.settings.onboardingSeen) {
+      this.settings.onboardingSeen = true;
+      await this.saveSettings();
+      new import_obsidian.Notice("Culebra is ready. Select text or open a note, then choose Culebra to begin.");
+    }
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
+        const hasSelection = editor.getSelection().trim().length > 0;
         menu.addItem((item) => {
-          item.setTitle("Culebra AI Spell Correct").setIcon("spell-check").onClick(() => {
+          item.setTitle(hasSelection ? "Culebra: Correct selected text" : "Culebra: Correct current note").setIcon("spell-check").onClick(() => {
             void this.correctEditorText(editor);
           });
         });
@@ -159,7 +278,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
           return;
         }
         menu.addItem((item) => {
-          item.setTitle("Culebra AI Spell Correct").setIcon("spell-check").onClick(() => {
+          item.setTitle("Culebra: Correct this Markdown file").setIcon("spell-check").onClick(() => {
             void this.correctFile(file);
           });
         });
@@ -167,7 +286,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     );
     this.addCommand({
       id: "spell-correct",
-      name: "Culebra AI Spell Correct",
+      name: "Culebra: Correct selection or current note",
       editorCallback: (editor) => {
         void this.correctEditorText(editor);
       }
@@ -177,7 +296,11 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     void syncPurchasedCreditsFromConstance(this);
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const savedSettings = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {
+      this.settings.onboardingSeen = true;
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -213,11 +336,10 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     }, 15e3);
   }
   /**
-   * Charges 1 credit for a single correction operation (App_Credit_Unit_Name
-   * is "corrections" -- flat per-invocation cost, not metered by character).
-   * Spends the local free pool first, then the Constance-backed purchased
-   * pool. Returns false (and shows a Notice) only when both are confirmed
-   * exhausted; a network/error response fails open per Antero's policy.
+   * Reserves the character-based cost only after the user approves a preview.
+   * The local free-character pool is used first, followed by the Constance
+   * balance; transient balance failures fail open so an approved edit is not
+   * silently discarded.
    */
   async chargeOneCredit(textLength) {
     const cost = Math.max(1, Math.ceil(textLength / 1e3));
@@ -241,6 +363,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     console.warn("Culebra: credit spend check failed; proceeding and will reconcile on next sync.");
     return true;
   }
+  /** Correct the current selection, or the whole active note when no text is selected. */
   async correctEditorText(editor) {
     const selection = editor.getSelection();
     const hasSelection = selection.trim().length > 0;
@@ -250,34 +373,61 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     if (!correctedText) {
       return;
     }
+    if (correctedText === originalText) {
+      new import_obsidian.Notice(`Culebra found no changes in the ${target}.`);
+      return;
+    }
+    const shouldApply = await new CorrectionPreviewModal(
+      this.app,
+      target,
+      originalText,
+      correctedText
+    ).waitForDecision();
+    if (!shouldApply || !await this.chargeOneCredit(originalText.length)) {
+      return;
+    }
     if (hasSelection) {
       editor.replaceSelection(correctedText);
     } else {
       editor.setValue(correctedText);
     }
-    new import_obsidian.Notice(`Culebra corrected ${target}.`);
+    new import_obsidian.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
   }
+  /** Preview and, after approval, replace the contents of one Markdown file. */
   async correctFile(file) {
     const originalText = await this.app.vault.read(file);
     const correctedText = await this.correctText(originalText, file.name);
     if (!correctedText) {
       return;
     }
+    if (correctedText === originalText) {
+      new import_obsidian.Notice(`Culebra found no changes in ${file.name}.`);
+      return;
+    }
+    const shouldApply = await new CorrectionPreviewModal(
+      this.app,
+      file.name,
+      originalText,
+      correctedText
+    ).waitForDecision();
+    if (!shouldApply || !await this.chargeOneCredit(originalText.length)) {
+      return;
+    }
     await this.app.vault.modify(file, correctedText);
     new import_obsidian.Notice(`Culebra corrected ${file.name}.`);
   }
+  /** Ask the configured provider for corrected text without mutating the vault. */
   async correctText(originalText, targetLabel) {
     if (!originalText.trim()) {
       new import_obsidian.Notice("Culebra found no text to correct.");
       return null;
     }
-    const apiKey = this.settings.apiKey.trim();
-    if (!apiKey) {
-      new import_obsidian.Notice("Add your OpenRouter API key in Culebra settings before correcting text.");
-      return null;
-    }
-    const charged = await this.chargeOneCredit(originalText.length);
-    if (!charged) {
+    let apiKey;
+    try {
+      apiKey = await this.resolveApiKey();
+    } catch (error) {
+      console.error("Culebra: failed to resolve an OpenRouter API key", error);
+      new import_obsidian.Notice("Culebra could not fetch its built-in API key. Check your connection, or add your own OpenRouter key in settings.");
       return null;
     }
     new import_obsidian.Notice(`Culebra is correcting ${targetLabel}...`);
@@ -335,13 +485,20 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
+    containerEl.createEl("h3", { text: "Getting started" });
+    containerEl.createEl("p", {
+      text: "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra shows a before-and-after preview before applying anything."
+    });
+    containerEl.createEl("p", {
+      text: "Correction requests send only the text you explicitly choose to OpenRouter. Review the preview carefully before applying it."
+    });
     new import_obsidian.Setting(containerEl).setName("Model").setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`).addText(
       (text) => text.setPlaceholder(DEFAULT_MODEL).setValue(this.plugin.settings.model).onChange(async (value) => {
         this.plugin.settings.model = value.trim() || DEFAULT_MODEL;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("OpenRouter API key").setDesc("Stored locally in this vault and sent only to OpenRouter for corrections.").addText(
+    new import_obsidian.Setting(containerEl).setName("OpenRouter API key (optional)").setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.").addText(
       (text) => text.setPlaceholder("sk-or-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
         await this.plugin.saveSettings();
@@ -397,5 +554,53 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     this.creditsSummaryEl.setText(
       `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`
     );
+  }
+};
+var CorrectionPreviewModal = class extends import_obsidian.Modal {
+  constructor(app, targetLabel, originalText, correctedText) {
+    super(app);
+    this.targetLabel = targetLabel;
+    this.originalText = originalText;
+    this.correctedText = correctedText;
+    this.settled = false;
+    this.decision = new Promise((resolve) => {
+      this.resolveDecision = resolve;
+    });
+  }
+  waitForDecision() {
+    this.open();
+    return this.decision;
+  }
+  onOpen() {
+    this.setTitle(`Review correction: ${this.targetLabel}`);
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "Review the proposed changes. Nothing will be changed until you apply the correction."
+    });
+    const previewGrid = contentEl.createDiv({ cls: "culebra-preview-grid" });
+    const before = previewGrid.createDiv({ cls: "culebra-preview-pane" });
+    before.createEl("h3", { text: "Before" });
+    before.createEl("pre", { cls: "culebra-preview-text", text: this.originalText });
+    const after = previewGrid.createDiv({ cls: "culebra-preview-pane" });
+    after.createEl("h3", { text: "After" });
+    after.createEl("pre", { cls: "culebra-preview-text", text: this.correctedText });
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    const cancelButton = buttons.createEl("button", { text: "Cancel" });
+    cancelButton.addEventListener("click", () => this.finish(false));
+    const applyButton = buttons.createEl("button", { text: "Apply correction" });
+    applyButton.classList.add("mod-cta");
+    applyButton.addEventListener("click", () => this.finish(true));
+  }
+  onClose() {
+    this.finish(false);
+  }
+  finish(accepted) {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.resolveDecision(accepted);
+    this.close();
   }
 };
