@@ -59,6 +59,14 @@ npm run build
 GitHub release assets are attested by the repository's release workflow so their
 provenance can be verified independently.
 
+## Public Release Repository
+
+This TutivSoft repository is the final branded release repository. It
+intentionally includes the complete reviewable `main.ts` source snapshot
+because Obsidian Community checks the tagged public commit. Keep credentials,
+vault data, `node_modules`, and private backend files out of this repository.
+GitHub release assets are only `main.js`, `manifest.json`, and `styles.css`.
+
 ## License
 
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
