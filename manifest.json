@@ -1,7 +1,7 @@
 {
   "id": "culebra-ai-spell-correct",
   "name": "Culebra AI Spell Correct",
-  "version": "4.4.1",
+  "version": "4.4.2",
   "minAppVersion": "1.5.0",
   "description": "Correct spelling, grammar, and punctuation in selected text, notes, and Markdown files using OpenRouter.",
   "author": "Rahul",
