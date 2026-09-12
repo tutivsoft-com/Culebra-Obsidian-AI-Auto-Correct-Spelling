@@ -42,7 +42,7 @@ Culebra is designed to preserve headings, lists, tables, links, tags, frontmatte
 
 ## Credits and troubleshooting
 
-AI corrections use character-based credits. The settings page shows the remaining balance and available one-time packs. If a request fails, check the model ID, API key, network connection, and displayed balance. A correction is not applied unless you approve its preview.
+AI corrections use character-based credits. The settings page shows the remaining balance and available one-time packs. If a request fails, check the model ID, provider configuration, network connection, and displayed balance. A correction is not applied unless you approve its preview.
 
 ## Limitations
 

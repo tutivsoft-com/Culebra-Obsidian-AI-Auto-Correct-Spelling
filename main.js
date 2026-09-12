@@ -179,7 +179,7 @@ async function fetchConstanceEntitlements(deviceId) {
   }
   return (_a = response.json) == null ? void 0 : _a.data;
 }
-async function spendConstanceCredits(deviceId, amount) {
+async function spendConstanceCredits(deviceId, amount, stableEventId) {
   var _a, _b, _c;
   try {
     const response = await (0, import_obsidian.requestUrl)({
@@ -191,7 +191,7 @@ async function spendConstanceCredits(deviceId, amount) {
         external_customer_id: deviceId,
         machine_id: deviceId,
         amount,
-        event_id: generateEventId()
+        event_id: stableEventId
       }),
       throw: false
     });
@@ -222,6 +222,18 @@ async function syncPurchasedCreditsFromConstance(plugin) {
     console.error("Culebra: Constance entitlement sync failed", error);
   }
 }
+async function retryPendingSpendEvents(plugin) {
+  var _a;
+  const pending = [...(_a = plugin.settings.pendingSpendEvents) != null ? _a : []];
+  for (const event of pending) {
+    const result = await spendConstanceCredits(plugin.settings.constanceDeviceId, event.amount, event.eventId);
+    if (result.kind === "error") break;
+    plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
+    if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
+    else plugin.settings.purchasedCredits = 0;
+    await plugin.saveSettings();
+  }
+}
 var DEFAULT_SETTINGS = {
   model: DEFAULT_MODEL,
   apiKey: "",
@@ -229,6 +241,7 @@ var DEFAULT_SETTINGS = {
   billingEmail: "",
   freeCredits: 2e3,
   purchasedCredits: 0,
+  pendingSpendEvents: [],
   onboardingSeen: false
 };
 var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
@@ -257,6 +270,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       this.settings.constanceDeviceId = generateSecureDeviceId();
       await this.saveSettings();
     }
+    this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents) ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0) : [];
+    await this.saveSettings();
     if (!this.settings.onboardingSeen) {
       this.settings.onboardingSeen = true;
       await this.saveSettings();
@@ -293,7 +308,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
     new import_obsidian.Notice("Culebra AI Spell Correct loaded");
-    void syncPurchasedCreditsFromConstance(this);
+    void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
   async loadSettings() {
     const savedSettings = await this.loadData();
@@ -336,8 +351,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     }, 15e3);
   }
   /**
-   * Reserves the character-based cost only after the user approves a preview.
-   * The local free-character pool is used first, followed by the Constance
+  * Reserves the character-based cost only after the user approves a preview.
+  * The local free-character pool is used first, followed by the Constance
    * balance; transient balance failures fail open so an approved edit is not
    * silently discarded.
    */
@@ -348,19 +363,35 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       await this.saveSettings();
       return true;
     }
-    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost);
+    await retryPendingSpendEvents(this);
+    if (this.settings.pendingSpendEvents.length > 0) {
+      new import_obsidian.Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
+      return false;
+    }
+    const stableEventId = generateEventId();
+    this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+    try {
+      await this.saveSettings();
+    } catch (error) {
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
+      console.error("Culebra: could not persist pending credit spend", error);
+      return false;
+    }
+    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost, stableEventId);
     if (result.kind === "ok") {
       this.settings.purchasedCredits = result.balance;
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
       return true;
     }
     if (result.kind === "insufficient") {
       this.settings.purchasedCredits = 0;
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
       new import_obsidian.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
       return false;
     }
-    console.warn("Culebra: credit spend check failed; proceeding and will reconcile on next sync.");
+    console.warn("Culebra: credit spend is unknown; proceeding once and reconciling the persisted event before another paid operation.");
     return true;
   }
   /** Correct the current selection, or the whole active note when no text is selected. */

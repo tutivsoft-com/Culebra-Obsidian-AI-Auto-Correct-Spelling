@@ -61,11 +61,12 @@ provenance can be verified independently.
 
 ## Public Release Repository
 
-This TutivSoft repository is the final branded release repository. It
-intentionally includes the complete reviewable `main.ts` source snapshot
-because Obsidian Community checks the tagged public commit. Keep credentials,
-vault data, `node_modules`, and private backend files out of this repository.
-GitHub release assets are only `main.js`, `manifest.json`, and `styles.css`.
+The TutivSoft repository is the final branded release repository. It is not the
+development checkout, but it intentionally includes the complete reviewable
+`main.ts` source snapshot because Obsidian Community checks the tagged public
+commit. Keep credentials, vault data, `node_modules`, and private backend files
+out of that repository. Upload only `main.js`, `manifest.json`, and
+`styles.css` as GitHub release assets.
 
 ## License
 

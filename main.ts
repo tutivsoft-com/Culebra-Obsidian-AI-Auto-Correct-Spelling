@@ -229,7 +229,7 @@ type SpendResult =
   | { kind: "insufficient" }
   | { kind: "error" };
 
-async function spendConstanceCredits(deviceId: string, amount: number): Promise<SpendResult> {
+async function spendConstanceCredits(deviceId: string, amount: number, stableEventId: string): Promise<SpendResult> {
   try {
     const response = await requestUrl({
       url: `${CONSTANCE_BASE_URL}/api/v1/public/browser/credits/spend`,
@@ -240,7 +240,7 @@ async function spendConstanceCredits(deviceId: string, amount: number): Promise<
         external_customer_id: deviceId,
         machine_id: deviceId,
         amount,
-        event_id: generateEventId(),
+        event_id: stableEventId,
       }),
       throw: false,
     });
@@ -280,6 +280,18 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
   }
 }
 
+async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promise<void> {
+  const pending = [...(plugin.settings.pendingSpendEvents ?? [])];
+  for (const event of pending) {
+    const result = await spendConstanceCredits(plugin.settings.constanceDeviceId, event.amount, event.eventId);
+    if (result.kind === "error") break;
+    plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
+    if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
+    else plugin.settings.purchasedCredits = 0;
+    await plugin.saveSettings();
+  }
+}
+
 interface CulebraSettings {
   model: string;
   apiKey: string;
@@ -293,6 +305,9 @@ interface CulebraSettings {
   // Local mirror of the real Constance CreditBalance, kept in sync via
   // POST /public/browser/entitlements (see syncPurchasedCreditsFromConstance).
   purchasedCredits: number;
+  // Events are written before a paid correction starts. Unknown transport
+  // outcomes stay here and are retried with the same event ID after restart.
+  pendingSpendEvents: Array<{ eventId: string; amount: number }>;
   onboardingSeen: boolean;
 }
 
@@ -303,6 +318,7 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   billingEmail: "",
   freeCredits: 2000,
   purchasedCredits: 0,
+  pendingSpendEvents: [],
   onboardingSeen: false,
 };
 
@@ -337,6 +353,10 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       this.settings.constanceDeviceId = generateSecureDeviceId();
       await this.saveSettings();
     }
+    this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents)
+      ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0)
+      : [];
+    await this.saveSettings();
 
     if (!this.settings.onboardingSeen) {
       this.settings.onboardingSeen = true;
@@ -387,7 +407,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     new Notice("Culebra AI Spell Correct loaded");
 
     // Background balance sync; never blocks load, fails silently offline.
-    void syncPurchasedCreditsFromConstance(this);
+    void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
 
   async loadSettings() {
@@ -440,8 +460,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 
    /**
-    * Reserves the character-based cost only after the user approves a preview.
-    * The local free-character pool is used first, followed by the Constance
+   * Reserves the character-based cost only after the user approves a preview.
+   * The local free-character pool is used first, followed by the Constance
     * balance; transient balance failures fail open so an approved edit is not
     * silently discarded.
     */
@@ -453,14 +473,30 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return true;
     }
 
-    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost);
+    await retryPendingSpendEvents(this);
+    if (this.settings.pendingSpendEvents.length > 0) {
+      new Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
+      return false;
+    }
+    const stableEventId = generateEventId();
+    this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+    try {
+      await this.saveSettings();
+    } catch (error) {
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
+      console.error("Culebra: could not persist pending credit spend", error);
+      return false;
+    }
+    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost, stableEventId);
     if (result.kind === "ok") {
       this.settings.purchasedCredits = result.balance;
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
       return true;
     }
     if (result.kind === "insufficient") {
       this.settings.purchasedCredits = 0;
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
       new Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
       return false;
@@ -469,7 +505,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     // Network error or unexpected non-insufficient status: fail open,
     // proceed with applying the reviewed correction, and let the next sync reconcile the local
     // purchasedCredits mirror against Constance's real balance.
-    console.warn("Culebra: credit spend check failed; proceeding and will reconcile on next sync.");
+    console.warn("Culebra: credit spend is unknown; proceeding once and reconciling the persisted event before another paid operation.");
     return true;
   }
 
