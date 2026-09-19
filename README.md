@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.2` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.5` (canonical source: `manifest.json`) · [Complete user guide](./docs/USER_GUIDE.md)
 
 ## Features
 
