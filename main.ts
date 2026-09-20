@@ -265,10 +265,9 @@ interface CulebraSettings {
   billingEmail: string;
   billingAccessToken: string;
   billingAccountLinked: boolean;
-  // Local-only starter allowance. Granted once, the first time a fresh
-  // install merges this default (loadData() returns nothing on first run);
-  // every load after that persists whatever remains. Never touches
-  // Constance, same "keep the free grant local" decision Denali/Antero use.
+  // Local mirror of the account-scoped free allowance returned by Constance.
+  // It is never authoritative and starts at zero so reinstalling cannot
+  // appear to grant a new local allowance.
   freeCredits: number;
   // Local mirror of the real Constance CreditBalance, refreshed through the
   // authenticated account entitlement endpoint.
@@ -286,7 +285,7 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   billingEmail: "",
   billingAccessToken: "",
   billingAccountLinked: false,
-  freeCredits: 2000,
+  freeCredits: 0,
   purchasedCredits: 0,
   pendingSpendEvents: [],
   onboardingSeen: false,

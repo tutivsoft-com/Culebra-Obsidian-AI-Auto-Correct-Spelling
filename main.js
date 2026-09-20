@@ -469,7 +469,7 @@ var DEFAULT_SETTINGS = {
   billingEmail: "",
   billingAccessToken: "",
   billingAccountLinked: false,
-  freeCredits: 2e3,
+  freeCredits: 0,
   purchasedCredits: 0,
   pendingSpendEvents: [],
   onboardingSeen: false
