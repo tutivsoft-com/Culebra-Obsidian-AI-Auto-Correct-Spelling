@@ -589,8 +589,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
   /**
   * Reserves the character-based cost only after the user approves a preview.
   * The local free-character pool is used first, followed by the Constance
-   * balance; transient balance failures fail open so an approved edit is not
-   * silently discarded.
+   * balance; any unverified balance or spend blocks the edit until the
+   * server gives an authoritative result.
    */
   async chargeOneCredit(textLength) {
     const cost = Math.max(1, Math.ceil(textLength));

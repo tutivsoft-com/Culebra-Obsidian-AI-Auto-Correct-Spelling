@@ -435,8 +435,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
    /**
    * Reserves the character-based cost only after the user approves a preview.
    * The local free-character pool is used first, followed by the Constance
-    * balance; transient balance failures fail open so an approved edit is not
-    * silently discarded.
+    * balance; any unverified balance or spend blocks the edit until the
+    * server gives an authoritative result.
     */
   private async chargeOneCredit(textLength: number): Promise<boolean> {
     const cost = Math.max(1, Math.ceil(textLength));
