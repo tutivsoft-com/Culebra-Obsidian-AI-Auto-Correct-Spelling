@@ -8,6 +8,8 @@ import {
   Setting,
   TFile,
 } from "obsidian";
+import { addBillingAccountSettings, claimAccountFreeUsage, spendAccountCredits } from "./constance-account";
+import { PluginSupport } from "./plugin-support";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
@@ -206,16 +208,13 @@ function generateEventId(): string {
   return "evt_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function fetchConstanceEntitlements(deviceId: string): Promise<any> {
+async function fetchConstanceEntitlements(plugin: CulebraSpellCorrectPlugin): Promise<any> {
+  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
+  const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
   const response = await requestUrl({
-    url: `${CONSTANCE_BASE_URL}/api/v1/public/browser/entitlements`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      app_id: CONSTANCE_APP_ID,
-      external_customer_id: deviceId,
-      machine_id: deviceId,
-    }),
+    url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false,
   });
   if (response.status < 200 || response.status >= 300) {
@@ -229,41 +228,13 @@ type SpendResult =
   | { kind: "insufficient" }
   | { kind: "error" };
 
-async function spendConstanceCredits(deviceId: string, amount: number, stableEventId: string): Promise<SpendResult> {
-  try {
-    const response = await requestUrl({
-      url: `${CONSTANCE_BASE_URL}/api/v1/public/browser/credits/spend`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        app_id: CONSTANCE_APP_ID,
-        external_customer_id: deviceId,
-        machine_id: deviceId,
-        amount,
-        event_id: stableEventId,
-      }),
-      throw: false,
-    });
-
-    // 402 = confirmed insufficient balance. 404 = no Constance customer
-    // exists yet for this device (i.e. never purchased) -- also a
-    // confirmed "0 purchased credits" state, not a transient failure, so
-    // it must block rather than fail open (otherwise a user who never
-    // buys anything would get unlimited corrections forever once their
-    // free pool ran out).
-    if (response.status === 402 || response.status === 404) {
-      return { kind: "insufficient" };
-    }
-    if (response.status < 200 || response.status >= 300) {
-      return { kind: "error" };
-    }
-
-    const balance = response.json?.data?.credits?.balance;
-    return { kind: "ok", balance: Math.max(0, Number(balance) || 0) };
-  } catch (error) {
-    console.error("Culebra: Constance credit spend call failed", error);
-    return { kind: "error" };
-  }
+async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: number, stableEventId: string): Promise<SpendResult> {
+  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
+  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
+  plugin.settings.billingAccessToken = "";
+  plugin.settings.billingAccountLinked = false;
+  await plugin.saveSettings();
+  return { kind: "error" };
 }
 
 async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlugin): Promise<void> {
@@ -271,7 +242,7 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
     return;
   }
   try {
-    const entitlement = await fetchConstanceEntitlements(plugin.settings.constanceDeviceId);
+    const entitlement = await fetchConstanceEntitlements(plugin);
     const serverBalance = entitlement?.credits?.balance;
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
     await plugin.saveSettings();
@@ -283,7 +254,7 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
 async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promise<void> {
   const pending = [...(plugin.settings.pendingSpendEvents ?? [])];
   for (const event of pending) {
-    const result = await spendConstanceCredits(plugin.settings.constanceDeviceId, event.amount, event.eventId);
+    const result = await spendConstanceCredits(plugin, event.amount, event.eventId);
     if (result.kind === "error") break;
     plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
     if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
@@ -297,6 +268,8 @@ interface CulebraSettings {
   apiKey: string;
   constanceDeviceId: string;
   billingEmail: string;
+  billingAccessToken: string;
+  billingAccountLinked: boolean;
   // Local-only starter allowance. Granted once, the first time a fresh
   // install merges this default (loadData() returns nothing on first run);
   // every load after that persists whatever remains. Never touches
@@ -316,6 +289,8 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   apiKey: "",
   constanceDeviceId: "",
   billingEmail: "",
+  billingAccessToken: "",
+  billingAccountLinked: false,
   freeCredits: 2000,
   purchasedCredits: 0,
   pendingSpendEvents: [],
@@ -328,6 +303,7 @@ const DEFAULT_SETTINGS: CulebraSettings = {
  * change to the selection, note, or chosen file.
  */
 export default class CulebraSpellCorrectPlugin extends Plugin {
+  support!: PluginSupport;
   settings: CulebraSettings = DEFAULT_SETTINGS;
   // Cached once resolved so every correction doesn't re-fetch the manifest;
   // cleared and retried on failure in case the key was rotated mid-session.
@@ -347,6 +323,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 
   async onload() {
+    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a review-first AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command and review the preview before applying."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
+    this.support.start();
     await this.loadSettings();
 
     if (!this.settings.constanceDeviceId) {
@@ -356,6 +334,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents)
       ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0)
       : [];
+    this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
+    this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
     await this.saveSettings();
 
     if (!this.settings.onboardingSeen) {
@@ -425,6 +405,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 
   openBuyCheckout(tier: keyof typeof CONSTANCE_PRICE_IDS) {
+    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) { new Notice("Sign in or create a billing account in Culebra settings before buying characters."); return; }
     const email = this.settings.billingEmail.trim();
     if (!email) {
       new Notice("Enter a billing email in Culebra settings before buying credits.");
@@ -466,12 +447,19 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     * silently discarded.
     */
   private async chargeOneCredit(textLength: number): Promise<boolean> {
-    const cost = Math.max(1, Math.ceil(textLength / 1000));
-    if (this.settings.freeCredits >= cost) {
-      this.settings.freeCredits -= cost;
+    const cost = Math.max(1, Math.ceil(textLength));
+    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
+      new Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
+      return false;
+    }
+    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
+    if (free.kind === "ok") {
+      this.settings.freeCredits = free.remaining;
       await this.saveSettings();
       return true;
     }
+    if (free.kind === "auth-required") { this.settings.billingAccessToken = ""; this.settings.billingAccountLinked = false; await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
+    if (free.kind === "error") { new Notice("Culebra: the account allowance could not be verified. No correction was applied."); return false; }
 
     await retryPendingSpendEvents(this);
     if (this.settings.pendingSpendEvents.length > 0) {
@@ -487,7 +475,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       console.error("Culebra: could not persist pending credit spend", error);
       return false;
     }
-    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost, stableEventId);
+    const result = await spendConstanceCredits(this, cost, stableEventId);
     if (result.kind === "ok") {
       this.settings.purchasedCredits = result.balance;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
@@ -502,11 +490,9 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return false;
     }
 
-    // Network error or unexpected non-insufficient status: fail open,
-    // proceed with applying the reviewed correction, and let the next sync reconcile the local
-    // purchasedCredits mirror against Constance's real balance.
-    console.warn("Culebra: credit spend is unknown; proceeding once and reconciling the persisted event before another paid operation.");
-    return true;
+    console.warn("Culebra: credit spend is unknown; blocking until the persisted event can be reconciled.");
+    new Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
+    return false;
   }
 
    /** Correct the current selection, or the whole active note when no text is selected. */
@@ -705,24 +691,13 @@ class CulebraSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Credits & billing" });
     containerEl.createEl("p", {
       text:
-        "Each correction costs 1 credit per 1,000 characters. New installs start with 2,000 free characters; buy more below when you run out.",
+        "Corrections are metered by input characters. Each billing account gets a one-time 2,000-character starter allowance across linked installations; buy more below when you run out.",
     });
 
     this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
     this.renderCreditsSummary();
 
-    new Setting(containerEl)
-      .setName("Billing email")
-      .setDesc("Used for your Paddle purchase receipt. Not required to check your balance -- that uses this device's id.")
-      .addText((text) =>
-        text
-          .setPlaceholder("you@example.com")
-          .setValue(this.plugin.settings.billingEmail)
-          .onChange(async (value) => {
-            this.plugin.settings.billingEmail = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
+    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
 
     new Setting(containerEl)
       .setName("Buy credits")

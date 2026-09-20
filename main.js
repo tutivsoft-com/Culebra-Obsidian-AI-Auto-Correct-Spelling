@@ -26,7 +26,259 @@ __export(main_exports, {
   default: () => CulebraSpellCorrectPlugin
 });
 module.exports = __toCommonJS(main_exports);
+var import_obsidian3 = require("obsidian");
+
+// publish/constance-account.ts
 var import_obsidian = require("obsidian");
+var CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
+function errorDetail(response, fallback) {
+  var _a, _b;
+  return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
+}
+async function authenticate(mode, email, password, installationId) {
+  var _a;
+  const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
+  }
+  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+  if (!token) throw new Error("Constance did not return an account token.");
+  return token;
+}
+async function linkInstallation(adapter, token) {
+  const response = await (0, import_obsidian.requestUrl)({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      app_id: adapter.appId,
+      installation_id: adapter.installationId,
+      legacy_external_customer_id: adapter.installationId,
+      platform: "obsidian",
+      app_version: adapter.appVersion || void 0
+    }),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(errorDetail(response, `Installation link failed (HTTP ${response.status})`));
+  }
+}
+async function signInBillingAccount(adapter, password, mode) {
+  const email = adapter.state.billingEmail.trim().toLowerCase();
+  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
+  if (password.length < 8) throw new Error("Password must contain at least 8 characters.");
+  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
+  const token = await authenticate(mode, email, password, adapter.installationId);
+  await linkInstallation(adapter, token);
+  adapter.state.billingEmail = email;
+  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccountLinked = true;
+  await adapter.persist();
+  await adapter.syncBalance();
+}
+async function claimAccountFreeUsage(state, appId, installationId, eventId, amount) {
+  var _a, _b;
+  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+      throw: false
+    });
+    if (response.status === 402) return { kind: "insufficient" };
+    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300) return { kind: "error" };
+    return { kind: "ok", remaining: Math.max(0, Number((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.remaining) || 0) };
+  } catch (error) {
+    console.error("Constance account free-usage claim failed", error);
+    return { kind: "error" };
+  }
+}
+async function spendAccountCredits(state, appId, installationId, eventId, amount) {
+  var _a, _b, _c;
+  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  try {
+    const response = await (0, import_obsidian.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+      throw: false
+    });
+    if (response.status === 402) return { kind: "insufficient" };
+    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300) return { kind: "error" };
+    const balance = Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance);
+    return Number.isFinite(balance) ? { kind: "ok", balance: Math.max(0, balance) } : { kind: "error" };
+  } catch (error) {
+    console.error("Constance authenticated credit spend failed", error);
+    return { kind: "error" };
+  }
+}
+function addBillingAccountSettings(containerEl, adapter) {
+  let password = "";
+  new import_obsidian.Setting(containerEl).setName("Billing account email").setDesc("Used for sign-in, purchase restore, and checkout. Reinstalling no longer creates a new free allowance.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).onChange(async (value) => {
+    adapter.state.billingEmail = value.trim();
+    await adapter.persist();
+  }));
+  new import_obsidian.Setting(containerEl).setName("Billing account password").setDesc("Used only for this sign-in request. The password is never saved by the plugin.").addText((text) => {
+    text.inputEl.type = "password";
+    text.setPlaceholder("At least 8 characters").onChange((value) => {
+      password = value;
+    });
+  });
+  const status = adapter.state.billingAccountLinked ? "Signed in and linked" : "Not signed in";
+  new import_obsidian.Setting(containerEl).setName("Billing account").setDesc(`${status}. The saved bearer session can restore purchases; your password is not stored.`).addButton((button) => button.setButtonText("Sign in").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "login");
+      new import_obsidian.Notice("Billing account signed in and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing sign-in failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Create account").onClick(async () => {
+    var _a;
+    button.setDisabled(true);
+    try {
+      await signInBillingAccount(adapter, password, "register");
+      new import_obsidian.Notice("Billing account created and this installation was linked.");
+      (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+    } catch (error) {
+      new import_obsidian.Notice(error instanceof Error ? error.message : "Billing account creation failed.");
+    } finally {
+      button.setDisabled(false);
+    }
+  })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
+    var _a;
+    adapter.state.billingAccessToken = "";
+    adapter.state.billingAccountLinked = false;
+    await adapter.persist();
+    new import_obsidian.Notice("Billing account signed out on this installation.");
+    (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
+  }));
+}
+
+// publish/plugin-support.ts
+var import_obsidian2 = require("obsidian");
+function safeDetail(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+var DocumentationModal = class extends import_obsidian2.Modal {
+  constructor(app, docs) {
+    super(app);
+    this.docs = docs;
+  }
+  onOpen() {
+    this.titleEl.setText(`${this.docs.name} documentation`);
+    this.contentEl.createEl("p", { text: this.docs.summary });
+    const addSection = (title, items) => {
+      this.contentEl.createEl("h3", { text: title });
+      const list = this.contentEl.createEl("ol");
+      for (const item of items) list.createEl("li", { text: item });
+    };
+    addSection("Quick start", this.docs.quickStart);
+    addSection("Useful commands", this.docs.commands);
+    addSection("Troubleshooting", this.docs.troubleshooting);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var PluginSupport = class {
+  constructor(plugin, docs) {
+    this.plugin = plugin;
+    this.docs = docs;
+    this.entries = [];
+    this.maxEntries = 250;
+  }
+  start() {
+    this.info("plugin.loaded", `version=${this.plugin.manifest.version}`);
+    this.plugin.registerDomEvent(window, "error", (event) => {
+      this.error("runtime.error", event.error || event.message);
+    });
+    this.plugin.registerDomEvent(window, "unhandledrejection", (event) => {
+      this.error("runtime.unhandled_rejection", event.reason);
+    });
+    this.plugin.addCommand({
+      id: "open-documentation",
+      name: "Open documentation",
+      callback: () => new DocumentationModal(this.plugin.app, this.docs).open()
+    });
+    this.plugin.addCommand({
+      id: "copy-debug-log",
+      name: "Copy debug log",
+      callback: () => {
+        void this.copyDiagnostics();
+      }
+    });
+    this.plugin.addCommand({
+      id: "open-plugin-settings",
+      name: "Open plugin settings",
+      callback: () => {
+        const setting = this.plugin.app.setting;
+        setting == null ? void 0 : setting.open();
+        setting == null ? void 0 : setting.openTabById(this.plugin.manifest.id);
+      }
+    });
+  }
+  info(event, detail) {
+    this.record("info", event, detail);
+  }
+  warn(event, detail) {
+    this.record("warn", event, detail);
+  }
+  error(event, detail) {
+    this.record("error", event, detail);
+  }
+  record(level, event, detail) {
+    const entry = { at: (/* @__PURE__ */ new Date()).toISOString(), level, event };
+    if (detail !== void 0) entry.detail = safeDetail(detail).slice(0, 4e3);
+    this.entries.push(entry);
+    if (this.entries.length > this.maxEntries) this.entries.splice(0, this.entries.length - this.maxEntries);
+    const method = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+    method.call(console, `[${this.docs.name}] ${event}`, detail != null ? detail : "");
+  }
+  async copyDiagnostics() {
+    const header = [
+      `Plugin: ${this.docs.name}`,
+      `Plugin ID: ${this.plugin.manifest.id}`,
+      `Version: ${this.plugin.manifest.version}`,
+      `Captured: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+      `User agent: ${navigator.userAgent}`,
+      ""
+    ];
+    try {
+      await navigator.clipboard.writeText(header.concat(this.entries.map(
+        (entry) => `${entry.at} [${entry.level.toUpperCase()}] ${entry.event}${entry.detail ? ` \u2014 ${entry.detail}` : ""}`
+      )).join("\n"));
+      new import_obsidian2.Notice(`${this.docs.name}: debug log copied. Secrets and note contents are not included.`);
+    } catch (error) {
+      this.error("diagnostics.copy_failed", error);
+      new import_obsidian2.Notice(`${this.docs.name}: could not copy the debug log.`);
+    }
+  }
+};
+
+// publish/main.ts
 var OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 var DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
 var REMOTE_MANIFEST_PASSPHRASE = "Kivu.RemoteKeyManifest.v1.2026D";
@@ -84,7 +336,7 @@ function selectSlot(manifest, wantState) {
   return (_a = manifest.r.find((slot) => slot.s === fallbackState)) != null ? _a : null;
 }
 async function fetchRemoteManifest(url) {
-  const response = await (0, import_obsidian.requestUrl)({ url, method: "GET", throw: false });
+  const response = await (0, import_obsidian3.requestUrl)({ url, method: "GET", throw: false });
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Manifest fetch failed: HTTP ${response.status}`);
   }
@@ -161,17 +413,14 @@ function generateEventId() {
   window.crypto.getRandomValues(bytes);
   return "evt_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
-async function fetchConstanceEntitlements(deviceId) {
+async function fetchConstanceEntitlements(plugin) {
   var _a;
-  const response = await (0, import_obsidian.requestUrl)({
-    url: `${CONSTANCE_BASE_URL}/api/v1/public/browser/entitlements`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      app_id: CONSTANCE_APP_ID,
-      external_customer_id: deviceId,
-      machine_id: deviceId
-    }),
+  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
+  const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
+  const response = await (0, import_obsidian3.requestUrl)({
+    url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false
   });
   if (response.status < 200 || response.status >= 300) {
@@ -179,34 +428,13 @@ async function fetchConstanceEntitlements(deviceId) {
   }
   return (_a = response.json) == null ? void 0 : _a.data;
 }
-async function spendConstanceCredits(deviceId, amount, stableEventId) {
-  var _a, _b, _c;
-  try {
-    const response = await (0, import_obsidian.requestUrl)({
-      url: `${CONSTANCE_BASE_URL}/api/v1/public/browser/credits/spend`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        app_id: CONSTANCE_APP_ID,
-        external_customer_id: deviceId,
-        machine_id: deviceId,
-        amount,
-        event_id: stableEventId
-      }),
-      throw: false
-    });
-    if (response.status === 402 || response.status === 404) {
-      return { kind: "insufficient" };
-    }
-    if (response.status < 200 || response.status >= 300) {
-      return { kind: "error" };
-    }
-    const balance = (_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance;
-    return { kind: "ok", balance: Math.max(0, Number(balance) || 0) };
-  } catch (error) {
-    console.error("Culebra: Constance credit spend call failed", error);
-    return { kind: "error" };
-  }
+async function spendConstanceCredits(plugin, amount, stableEventId) {
+  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
+  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
+  plugin.settings.billingAccessToken = "";
+  plugin.settings.billingAccountLinked = false;
+  await plugin.saveSettings();
+  return { kind: "error" };
 }
 async function syncPurchasedCreditsFromConstance(plugin) {
   var _a;
@@ -214,7 +442,7 @@ async function syncPurchasedCreditsFromConstance(plugin) {
     return;
   }
   try {
-    const entitlement = await fetchConstanceEntitlements(plugin.settings.constanceDeviceId);
+    const entitlement = await fetchConstanceEntitlements(plugin);
     const serverBalance = (_a = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _a.balance;
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
     await plugin.saveSettings();
@@ -226,7 +454,7 @@ async function retryPendingSpendEvents(plugin) {
   var _a;
   const pending = [...(_a = plugin.settings.pendingSpendEvents) != null ? _a : []];
   for (const event of pending) {
-    const result = await spendConstanceCredits(plugin.settings.constanceDeviceId, event.amount, event.eventId);
+    const result = await spendConstanceCredits(plugin, event.amount, event.eventId);
     if (result.kind === "error") break;
     plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
     if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
@@ -239,12 +467,14 @@ var DEFAULT_SETTINGS = {
   apiKey: "",
   constanceDeviceId: "",
   billingEmail: "",
+  billingAccessToken: "",
+  billingAccountLinked: false,
   freeCredits: 2e3,
   purchasedCredits: 0,
   pendingSpendEvents: [],
   onboardingSeen: false
 };
-var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
+var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -265,17 +495,21 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     return key;
   }
   async onload() {
+    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a review-first AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command and review the preview before applying."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
+    this.support.start();
     await this.loadSettings();
     if (!this.settings.constanceDeviceId) {
       this.settings.constanceDeviceId = generateSecureDeviceId();
       await this.saveSettings();
     }
     this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents) ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0) : [];
+    this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
+    this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
     await this.saveSettings();
     if (!this.settings.onboardingSeen) {
       this.settings.onboardingSeen = true;
       await this.saveSettings();
-      new import_obsidian.Notice("Culebra is ready. Select text or open a note, then choose Culebra to begin.");
+      new import_obsidian3.Notice("Culebra is ready. Select text or open a note, then choose Culebra to begin.");
     }
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
@@ -289,7 +523,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian.TFile) || file.extension !== "md") {
+        if (!(file instanceof import_obsidian3.TFile) || file.extension !== "md") {
           return;
         }
         menu.addItem((item) => {
@@ -307,7 +541,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       }
     });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
-    new import_obsidian.Notice("Culebra AI Spell Correct loaded");
+    new import_obsidian3.Notice("Culebra AI Spell Correct loaded");
     void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
   async loadSettings() {
@@ -321,14 +555,18 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     await this.saveData(this.settings);
   }
   openBuyCheckout(tier) {
+    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
+      new import_obsidian3.Notice("Sign in or create a billing account in Culebra settings before buying characters.");
+      return;
+    }
     const email = this.settings.billingEmail.trim();
     if (!email) {
-      new import_obsidian.Notice("Enter a billing email in Culebra settings before buying credits.");
+      new import_obsidian3.Notice("Enter a billing email in Culebra settings before buying credits.");
       return;
     }
     const priceId = CONSTANCE_PRICE_IDS[tier];
     if (!priceId || priceId === "PENDING_PROVISIONING") {
-      new import_obsidian.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
+      new import_obsidian3.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
       return;
     }
     const params = new URLSearchParams({
@@ -357,15 +595,31 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
    * silently discarded.
    */
   async chargeOneCredit(textLength) {
-    const cost = Math.max(1, Math.ceil(textLength / 1e3));
-    if (this.settings.freeCredits >= cost) {
-      this.settings.freeCredits -= cost;
+    const cost = Math.max(1, Math.ceil(textLength));
+    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
+      new import_obsidian3.Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
+      return false;
+    }
+    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
+    if (free.kind === "ok") {
+      this.settings.freeCredits = free.remaining;
       await this.saveSettings();
       return true;
     }
+    if (free.kind === "auth-required") {
+      this.settings.billingAccessToken = "";
+      this.settings.billingAccountLinked = false;
+      await this.saveSettings();
+      new import_obsidian3.Notice("Culebra: your billing session expired. Sign in again.");
+      return false;
+    }
+    if (free.kind === "error") {
+      new import_obsidian3.Notice("Culebra: the account allowance could not be verified. No correction was applied.");
+      return false;
+    }
     await retryPendingSpendEvents(this);
     if (this.settings.pendingSpendEvents.length > 0) {
-      new import_obsidian.Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
+      new import_obsidian3.Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
       return false;
     }
     const stableEventId = generateEventId();
@@ -377,7 +631,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       console.error("Culebra: could not persist pending credit spend", error);
       return false;
     }
-    const result = await spendConstanceCredits(this.settings.constanceDeviceId, cost, stableEventId);
+    const result = await spendConstanceCredits(this, cost, stableEventId);
     if (result.kind === "ok") {
       this.settings.purchasedCredits = result.balance;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
@@ -388,11 +642,12 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       this.settings.purchasedCredits = 0;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
-      new import_obsidian.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
+      new import_obsidian3.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
       return false;
     }
-    console.warn("Culebra: credit spend is unknown; proceeding once and reconciling the persisted event before another paid operation.");
-    return true;
+    console.warn("Culebra: credit spend is unknown; blocking until the persisted event can be reconciled.");
+    new import_obsidian3.Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
+    return false;
   }
   /** Correct the current selection, or the whole active note when no text is selected. */
   async correctEditorText(editor) {
@@ -405,7 +660,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       return;
     }
     if (correctedText === originalText) {
-      new import_obsidian.Notice(`Culebra found no changes in the ${target}.`);
+      new import_obsidian3.Notice(`Culebra found no changes in the ${target}.`);
       return;
     }
     const shouldApply = await new CorrectionPreviewModal(
@@ -422,7 +677,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
     } else {
       editor.setValue(correctedText);
     }
-    new import_obsidian.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
+    new import_obsidian3.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
   }
   /** Preview and, after approval, replace the contents of one Markdown file. */
   async correctFile(file) {
@@ -432,7 +687,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       return;
     }
     if (correctedText === originalText) {
-      new import_obsidian.Notice(`Culebra found no changes in ${file.name}.`);
+      new import_obsidian3.Notice(`Culebra found no changes in ${file.name}.`);
       return;
     }
     const shouldApply = await new CorrectionPreviewModal(
@@ -445,12 +700,12 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       return;
     }
     await this.app.vault.modify(file, correctedText);
-    new import_obsidian.Notice(`Culebra corrected ${file.name}.`);
+    new import_obsidian3.Notice(`Culebra corrected ${file.name}.`);
   }
   /** Ask the configured provider for corrected text without mutating the vault. */
   async correctText(originalText, targetLabel) {
     if (!originalText.trim()) {
-      new import_obsidian.Notice("Culebra found no text to correct.");
+      new import_obsidian3.Notice("Culebra found no text to correct.");
       return null;
     }
     let apiKey;
@@ -458,12 +713,12 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       apiKey = await this.resolveApiKey();
     } catch (error) {
       console.error("Culebra: failed to resolve an OpenRouter API key", error);
-      new import_obsidian.Notice("Culebra could not fetch its built-in API key. Check your connection, or add your own OpenRouter key in settings.");
+      new import_obsidian3.Notice("Culebra could not fetch its built-in API key. Check your connection, or add your own OpenRouter key in settings.");
       return null;
     }
-    new import_obsidian.Notice(`Culebra is correcting ${targetLabel}...`);
+    new import_obsidian3.Notice(`Culebra is correcting ${targetLabel}...`);
     try {
-      const response = await (0, import_obsidian.requestUrl)({
+      const response = await (0, import_obsidian3.requestUrl)({
         url: OPENROUTER_CHAT_COMPLETIONS_URL,
         method: "POST",
         headers: {
@@ -481,18 +736,18 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian.Plugin {
       });
       if (response.status < 200 || response.status >= 300) {
         console.error("Culebra AI Spell Correct failed", response.status, response.text);
-        new import_obsidian.Notice("Culebra correction failed. Check the developer console.");
+        new import_obsidian3.Notice("Culebra correction failed. Check the developer console.");
         return null;
       }
       const correctedText = extractResponseText(response.json);
       if (!correctedText.trim()) {
-        new import_obsidian.Notice("Culebra received an empty response; no changes made.");
+        new import_obsidian3.Notice("Culebra received an empty response; no changes made.");
         return null;
       }
       return correctedText;
     } catch (error) {
       console.error("Culebra AI Spell Correct failed", error);
-      new import_obsidian.Notice("Culebra correction failed. Check the developer console.");
+      new import_obsidian3.Notice("Culebra correction failed. Check the developer console.");
       return null;
     }
   }
@@ -506,7 +761,7 @@ function extractResponseText(responseJson) {
   const content = (_c = (_b = (_a = response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
   return typeof content === "string" ? content : "";
 }
-var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
+var CulebraSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.creditsSummaryEl = null;
@@ -523,13 +778,13 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("p", {
       text: "Correction requests send only the text you explicitly choose to OpenRouter. Review the preview carefully before applying it."
     });
-    new import_obsidian.Setting(containerEl).setName("Model").setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`).addText(
+    new import_obsidian3.Setting(containerEl).setName("Model").setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`).addText(
       (text) => text.setPlaceholder(DEFAULT_MODEL).setValue(this.plugin.settings.model).onChange(async (value) => {
         this.plugin.settings.model = value.trim() || DEFAULT_MODEL;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("OpenRouter API key (optional)").setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.").addText(
+    new import_obsidian3.Setting(containerEl).setName("OpenRouter API key (optional)").setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.").addText(
       (text) => text.setPlaceholder("sk-or-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
         await this.plugin.saveSettings();
@@ -541,17 +796,12 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     }
     containerEl.createEl("h3", { text: "Credits & billing" });
     containerEl.createEl("p", {
-      text: "Each correction costs 1 credit per 1,000 characters. New installs start with 2,000 free characters; buy more below when you run out."
+      text: "Corrections are metered by input characters. Each billing account gets a one-time 2,000-character starter allowance across linked installations; buy more below when you run out."
     });
     this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
     this.renderCreditsSummary();
-    new import_obsidian.Setting(containerEl).setName("Billing email").setDesc("Used for your Paddle purchase receipt. Not required to check your balance -- that uses this device's id.").addText(
-      (text) => text.setPlaceholder("you@example.com").setValue(this.plugin.settings.billingEmail).onChange(async (value) => {
-        this.plugin.settings.billingEmail = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Buy credits").setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.").addButton(
+    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+    new import_obsidian3.Setting(containerEl).setName("Buy credits").setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.").addButton(
       (button) => button.setButtonText("Buy $1 (20,000 characters)").onClick(() => {
         this.plugin.openBuyCheckout("usd_001");
       })
@@ -564,7 +814,7 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
         this.plugin.openBuyCheckout("usd_015");
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Refresh balance").setDesc("Pull the latest purchased-credit balance from Constance.").addButton(
+    new import_obsidian3.Setting(containerEl).setName("Refresh balance").setDesc("Pull the latest purchased-credit balance from Constance.").addButton(
       (button) => button.setButtonText("Refresh balance").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("Refreshing...");
@@ -587,7 +837,7 @@ var CulebraSettingTab = class extends import_obsidian.PluginSettingTab {
     );
   }
 };
-var CorrectionPreviewModal = class extends import_obsidian.Modal {
+var CorrectionPreviewModal = class extends import_obsidian3.Modal {
   constructor(app, targetLabel, originalText, correctedText) {
     super(app);
     this.targetLabel = targetLabel;
