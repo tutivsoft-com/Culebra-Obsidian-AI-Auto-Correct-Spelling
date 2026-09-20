@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.6` (canonical source: `manifest.json`) · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.13` · [Complete user guide](./docs/USER_GUIDE.md)
 
 ## Features
 
@@ -56,17 +56,18 @@ To create a production bundle locally:
 npm run build
 ```
 
+The release-bundle smoke test is deterministic and does not require a local
+vault:
+
+```bash
+npm run test:vault-plugin
+```
+
+To validate a deployed vault as well, set `CULEBRA_VAULT_CONFIG_DIR` to that
+vault's `.obsidian` directory before running the same command.
+
 GitHub release assets are attested by the repository's release workflow so their
 provenance can be verified independently.
-
-## Public Release Repository
-
-The TutivSoft repository is the final branded release repository. It is not the
-development checkout, but it intentionally includes the complete reviewable
-`main.ts` source snapshot because Obsidian Community checks the tagged public
-commit. Keep credentials, vault data, `node_modules`, and private backend files
-out of that repository. Upload only `main.js`, `manifest.json`, and
-`styles.css` as GitHub release assets.
 
 ## License
 
