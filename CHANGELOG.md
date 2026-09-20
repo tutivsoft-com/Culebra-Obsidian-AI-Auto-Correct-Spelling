@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.14 - 2026-09-21
+
+- Incremented release metadata without rebuilding the plugin.
+
 ## 4.4.13 - 2026-09-21
 
 - Synchronized billing-authenticated release metadata and the release-bundle smoke test.
