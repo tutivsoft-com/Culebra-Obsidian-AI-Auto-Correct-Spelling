@@ -181,13 +181,8 @@ Hard rules:
 
 // --- Constance (TutivSoft) billing integration ---
 // One-time credit purchases only, no license keys. Uses the unsigned public
-// browser-relay endpoints (the same shape a backend-less Obsidian plugin
-// needs, since it can't hold a real HMAC signing secret any more than it
-// can hold a real OpenRouter key): checkout via GET /buy, balance reads via
-// POST /public/browser/entitlements, balance spend via POST
-// /public/browser/credits/spend. Identity is this install's own
-// constanceDeviceId, reused as both external_customer_id and machine_id
-// (the "unsigned same-install lookup" model that endpoint requires).
+// Authenticated Constance account endpoints are used for balance reads and
+// spends; checkout remains the hosted /buy flow.
 const CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 const CONSTANCE_APP_ID = "culebra-ai-spell-correct";
 const CONSTANCE_PRICE_IDS: Record<"usd_001" | "usd_005" | "usd_015", string> = {
@@ -275,8 +270,8 @@ interface CulebraSettings {
   // every load after that persists whatever remains. Never touches
   // Constance, same "keep the free grant local" decision Denali/Antero use.
   freeCredits: number;
-  // Local mirror of the real Constance CreditBalance, kept in sync via
-  // POST /public/browser/entitlements (see syncPurchasedCreditsFromConstance).
+  // Local mirror of the real Constance CreditBalance, refreshed through the
+  // authenticated account entitlement endpoint.
   purchasedCredits: number;
   // Events are written before a paid correction starts. Unknown transport
   // outcomes stay here and are retried with the same event ID after restart.
