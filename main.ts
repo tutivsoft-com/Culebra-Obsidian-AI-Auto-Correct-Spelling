@@ -384,6 +384,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   async loadSettings() {
     const savedSettings = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    // Free usage is account-scoped; never trust a legacy local counter.
+    this.settings.freeCredits = 0;
     // Existing installs predate the onboarding flag; do not show a first-run
     // notice to them after upgrading.
     if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {

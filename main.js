@@ -545,6 +545,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
   async loadSettings() {
     const savedSettings = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    this.settings.freeCredits = 0;
     if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {
       this.settings.onboardingSeen = true;
     }
