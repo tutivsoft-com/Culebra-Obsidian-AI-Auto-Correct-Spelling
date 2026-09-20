@@ -509,7 +509,6 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
     if (!this.settings.onboardingSeen) {
       this.settings.onboardingSeen = true;
       await this.saveSettings();
-      new import_obsidian3.Notice("Culebra is ready. Select text or open a note, then choose Culebra to begin.");
     }
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
@@ -541,7 +540,6 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       }
     });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
-    new import_obsidian3.Notice("Culebra AI Spell Correct loaded");
     void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
   async loadSettings() {

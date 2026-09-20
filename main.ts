@@ -336,7 +336,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     if (!this.settings.onboardingSeen) {
       this.settings.onboardingSeen = true;
       await this.saveSettings();
-      new Notice("Culebra is ready. Select text or open a note, then choose Culebra to begin.");
     }
 
     this.registerEvent(
@@ -379,8 +378,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     });
 
     this.addSettingTab(new CulebraSettingTab(this.app, this));
-    new Notice("Culebra AI Spell Correct loaded");
-
     // Background balance sync; never blocks load, fails silently offline.
     void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
