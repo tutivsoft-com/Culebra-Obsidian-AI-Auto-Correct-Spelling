@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.4.15 - 2026-09-22
+
+- Updated Constance checkout to the authenticated account route with stable
+  idempotency, refresh-token support, and checkout-status polling. Retained
+  `/buy` only as the Contract v9 no-checkout-URL fallback.
+
 ## 4.4.14 - 2026-09-21
 
 - Incremented release metadata without rebuilding the plugin.

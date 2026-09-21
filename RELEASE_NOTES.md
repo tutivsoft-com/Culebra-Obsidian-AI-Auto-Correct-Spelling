@@ -1,5 +1,11 @@
 # Release Notes
 
+## 4.4.15 - 2026-09-22
+
+Billing maintenance release: uses authenticated Constance checkout with a
+stable idempotency key, refresh-token support, and settlement polling. The
+legacy `/buy` URL is retained only as a hosted-checkout fallback.
+
 ## 4.4.6 - 2026-09-20
 
 Metadata-only patch preparation: synchronized all version surfaces and the
