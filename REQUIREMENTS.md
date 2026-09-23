@@ -1,5 +1,7 @@
 # Culebra AI Spell Correct Requirements
 
+Current plugin version: 4.4.18. This is a documentation and release-metadata update; runtime requirements are unchanged.
+
 ## Purpose
 
 Culebra is an Obsidian plugin that uses OpenRouter (an OpenAI-compatible chat completions API) to correct spelling, grammar, capitalization, punctuation, and light readability issues in Rahul's notes.
@@ -37,7 +39,7 @@ OpenRouter documentation checked on 2026-08-16:
 - Spending: once the account-scoped free allowance is exhausted, further corrections call authenticated `POST /api/v1/billing/credits/spend`. HTTP 402 blocks the correction with a `Notice`; HTTP 401/403/404 clears the session and requires sign-in. Network failures fail closed so unverified work is never billed or sent to OpenRouter.
 - Purchasing: the settings tab has three "Buy" buttons that prefer authenticated `POST /api/v1/billing/checkout` with `plan_code` (`standard`, `pro`, or `ultimate`), the linked installation id, bearer auth, and a stable `Idempotency-Key`. The returned checkout URL is opened in the system browser and settlement is polled through `GET /api/v1/billing/checkouts/{checkout_id}`. Legacy `GET /buy?...` is used only when the authenticated response has no checkout URL.
 - Identity: the user signs in or registers with an email and password; if registration requires email verification, the one-time token is entered in the settings tab and sent to `POST /api/v1/auth/register/verify`. Constance then links the persisted random `constanceDeviceId` installation id to the account. The password and verification token are never saved.
-- Pricing tiers (verified against the live Constance catalog): $1 -> 20,000 characters, $5 -> 160,000 characters, $15 -> 640,000 characters. The `Pdl_price_id_OneTime*` values are live Paddle ids.
+- Pricing tiers recorded from the live Constance catalog (last checked 2026-08-16): $1 -> 20,000 characters, $5 -> 160,000 characters, $15 -> 640,000 characters. The current Constance catalog is authoritative. The `Pdl_price_id_OneTime*` values are live Paddle ids.
 - Signing/callbacks: this backend-less plugin does not use server-to-server HMAC headers or entitlement callbacks. It uses the current authenticated account endpoints with bearer auth; the legacy unsigned browser-relay routes are not its primary integration.
 
 ## Correction Rules
@@ -68,6 +70,7 @@ The prompt must instruct the model to:
 ## Test Requirements
 
 - Build the plugin successfully with `npm run build`.
-- Deploy the plugin to Rahul's main Obsidian vault with `npm run deploy:vault`.
-- Test the OpenRouter API with sample misspelled text.
-- Test the correction logic with sample misspelled text before Rahul tests inside Obsidian.
+- Run `npm run test:vault-plugin` to validate the deterministic release bundle. Set `CULEBRA_VAULT_CONFIG_DIR` only when intentionally checking a specific installed vault.
+- Run `node --check publish/main.js` and `git diff --check` before packaging.
+- For user-facing verification, use a disposable test vault: correct selected text, preview and cancel once, then apply; repeat for a note and a Markdown file, and verify undo and privacy guidance.
+- Run the live OpenRouter smoke test only when network access and an intentionally configured test credential are available.

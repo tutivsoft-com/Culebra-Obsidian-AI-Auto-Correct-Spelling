@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.4.18 - 2026-09-24
+
+- Added dedicated feature and marketing documentation and refreshed the release workflow and requirements.
+- Documentation and metadata only; no plugin runtime behavior changed.
+
 ## 4.4.17 - 2026-09-23
 
 - Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.

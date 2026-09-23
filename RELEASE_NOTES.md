@@ -1,4 +1,8 @@
-# Release 4.4.17
+# Release 4.4.18
+
+Documentation and release-metadata update. The plugin runtime behavior is unchanged.
+
+## Previous release — 4.4.17
 
 - Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.
 
