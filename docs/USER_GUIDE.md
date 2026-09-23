@@ -18,7 +18,7 @@ Culebra corrects spelling, grammar, punctuation, capitalization, and obvious typ
 - **Markdown file:** right-click a Markdown file in the file explorer and choose **Culebra: Correct this Markdown file**.
 - **Command palette:** search for `Culebra: Correct selection or current note`.
 
-Culebra always shows a **Before / After** preview. Choose **Apply correction** to write the change, or **Cancel** to leave the note untouched. Editor changes can also be undone with Ctrl/Cmd+Z.
+Culebra always shows a **Before / After** preview. Choose **Apply correction** to write the change, or **Cancel** to leave the note untouched. If the note changes while you review the preview, run the correction again. Editor changes can also be undone with Ctrl/Cmd+Z.
 
 ### Example
 
@@ -42,7 +42,14 @@ Culebra is designed to preserve headings, lists, tables, links, tags, frontmatte
 
 ## Credits and troubleshooting
 
-AI corrections use character-based credits. The settings page shows the remaining balance and available one-time packs. If a request fails, check the model ID, provider configuration, network connection, and displayed balance. A correction is not applied unless you approve its preview.
+AI corrections use character-based credits. Sign in or create a billing account
+in Settings; new accounts may require the email verification token shown in
+your verification email. The settings page shows the remaining balance and
+available one-time packs. Purchases open authenticated Constance checkout and
+refresh after settlement, with the legacy checkout page used only if the
+authenticated checkout cannot return a URL. If a request fails, check the
+model ID, provider configuration, network connection, and displayed balance. A
+correction is not applied unless you approve its preview.
 
 ## Limitations
 

@@ -180,8 +180,9 @@ Hard rules:
 - Return only the corrected text. Do not wrap it in code fences. Do not add commentary.`;
 
 // --- Constance (TutivSoft) billing integration ---
-// One-time credit purchases only, no license keys. Account-linked Constance
-// endpoints are authoritative for entitlements, spending, and checkout.
+// One-time credit purchases only, no license keys. Authenticated Constance
+// account endpoints are used for balance reads, free-usage claims, spends, and
+// preferred catalog-code checkout; /buy is retained only as a fallback.
 const CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 const CONSTANCE_APP_ID = "culebra-ai-spell-correct";
 const CONSTANCE_PRICE_IDS: Record<"usd_001" | "usd_005" | "usd_015", string> = {
@@ -228,10 +229,9 @@ type SpendResult =
   | { kind: "error" };
 
 async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: number, stableEventId: string): Promise<SpendResult> {
-  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount, () => plugin.saveSettings());
+  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
   if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
   plugin.settings.billingAccessToken = "";
-  plugin.settings.billingRefreshToken = "";
   plugin.settings.billingAccountLinked = false;
   await plugin.saveSettings();
   return { kind: "error" };
@@ -269,7 +269,6 @@ interface CulebraSettings {
   constanceDeviceId: string;
   billingEmail: string;
   billingAccessToken: string;
-  billingRefreshToken: string;
   billingAccountLinked: boolean;
   // Local mirror of the account-scoped free allowance returned by Constance.
   // It is never authoritative and starts at zero so reinstalling cannot
@@ -281,7 +280,6 @@ interface CulebraSettings {
   // Events are written before a paid correction starts. Unknown transport
   // outcomes stay here and are retried with the same event ID after restart.
   pendingSpendEvents: Array<{ eventId: string; amount: number }>;
-  pendingCheckout: { idempotencyKey: string; planCode: string; priceId: string } | null;
   onboardingSeen: boolean;
 }
 
@@ -291,12 +289,10 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   constanceDeviceId: "",
   billingEmail: "",
   billingAccessToken: "",
-  billingRefreshToken: "",
   billingAccountLinked: false,
   freeCredits: 0,
   purchasedCredits: 0,
   pendingSpendEvents: [],
-  pendingCheckout: null,
   onboardingSeen: false,
 };
 
@@ -337,12 +333,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents)
       ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0)
       : [];
-    const pendingCheckout = this.settings.pendingCheckout;
-    this.settings.pendingCheckout = pendingCheckout && typeof pendingCheckout.idempotencyKey === "string" && typeof pendingCheckout.planCode === "string" && typeof pendingCheckout.priceId === "string"
-      ? pendingCheckout
-      : null;
     this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
-    this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
     this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
     await this.saveSettings();
 
@@ -411,87 +402,65 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  async openBuyCheckout(tier: keyof typeof CONSTANCE_PRICE_IDS) {
+  openBuyCheckout(tier: keyof typeof CONSTANCE_PRICE_IDS) {
     if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) { new Notice("Sign in or create a billing account in Culebra settings before buying characters."); return; }
     const priceId = CONSTANCE_PRICE_IDS[tier];
-    if (!priceId || priceId === "PENDING_PROVISIONING") {
-      new Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
-      return;
-    }
-    const planCode = CONSTANCE_PLAN_CODES[tier];
-    const pending = this.settings.pendingCheckout;
-    if (pending && (pending.planCode !== planCode || pending.priceId !== priceId)) {
-      new Notice("Culebra: finish or retry the pending checkout before starting another purchase.", 5000);
-      return;
-    }
-    const checkout = pending || { idempotencyKey: generateEventId(), planCode, priceId };
-    if (!pending) {
-      this.settings.pendingCheckout = checkout;
-      await this.saveSettings();
-    }
-    const result = await createAuthenticatedCheckout(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, checkout.planCode, checkout.idempotencyKey, () => this.saveSettings());
-    if (result.kind === "auth-required") {
-      this.settings.billingAccessToken = "";
-      this.settings.billingRefreshToken = "";
-      this.settings.billingAccountLinked = false;
-      await this.saveSettings();
-      new Notice("Culebra: your billing session expired. Sign in again before purchasing.", 6000);
-      return;
-    }
-    if (result.kind !== "ok") {
-      new Notice(result.kind === "unavailable" ? `Culebra checkout unavailable (HTTP ${result.status}). Retry when Constance is reachable.` : "Culebra checkout could not be started. Retry when Constance is reachable.", 6000);
-      return;
-    }
-    const email = this.settings.billingEmail.trim().toLowerCase();
-    if (!result.checkoutUrl && (!email || !email.includes("@"))) {
-      new Notice("Enter a valid billing email before using the checkout fallback.", 5000);
-      return;
-    }
-    this.settings.pendingCheckout = null;
-    await this.saveSettings();
-    const checkoutUrl = result.checkoutUrl || `${CONSTANCE_BASE_URL}/buy?${new URLSearchParams({ app_id: CONSTANCE_APP_ID, price_id: priceId, email, external_customer_id: this.settings.constanceDeviceId }).toString()}`;
-    // The authenticated checkout owns the account identity. /buy is retained
-    // only as the Contract v9 fallback when a transaction has no checkout URL.
-    window.open(checkoutUrl, "_blank");
-    new Notice("Opening secure Constance checkout...", 3000);
-    this.pollAfterCheckout(result.checkoutId || undefined);
+    void (async () => {
+      try {
+        const result = await createAuthenticatedCheckout(
+          { state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, appVersion: this.manifest.version, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) },
+          CONSTANCE_PLAN_CODES[tier],
+          `checkout_${generateEventId()}`,
+        );
+        if (result.kind === "ok") {
+          window.open(result.checkoutUrl, "_blank");
+          this.pollAfterCheckout(result.checkoutId);
+          return;
+        }
+        if (result.kind === "auth-required") {
+          this.settings.billingAccessToken = "";
+          this.settings.billingAccountLinked = false;
+          await this.saveSettings();
+          new Notice("Culebra: your billing session expired. Sign in again before buying credits.");
+          return;
+        }
+      } catch (error) {
+        // A transport failure can leave an authenticated checkout in an
+        // unknown state; do not create a second purchase through /buy.
+        console.error("Culebra: authenticated checkout request failed", error);
+        new Notice("Culebra: checkout status is unknown. Refresh billing and try again.");
+        return;
+      }
+
+      const email = this.settings.billingEmail.trim();
+      if (!priceId || priceId === "PENDING_PROVISIONING") {
+        new Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
+        return;
+      }
+      if (!email || !email.includes("@")) {
+        new Notice("Enter a valid billing email in Culebra settings before using the legacy checkout fallback.");
+        return;
+      }
+      const params = new URLSearchParams({ app_id: CONSTANCE_APP_ID, price_id: priceId, email, external_customer_id: this.settings.constanceDeviceId });
+      // This plugin's manifest sets isDesktopOnly: false, so it must not
+      // assume an Electron-only API like shell.openExternal is available.
+      window.open(`${CONSTANCE_BASE_URL}/buy?${params.toString()}`, "_blank");
+      this.pollAfterCheckout();
+    })();
   }
 
   private pollAfterCheckout(checkoutId?: string) {
     let attempts = 0;
-    let running = false;
-    let intervalId: number | null = null;
-    const poll = async () => {
-      if (running) return;
-      running = true;
+    const intervalId = window.setInterval(() => {
       attempts += 1;
-      try {
-        if (checkoutId) {
-          const status = await pollAuthenticatedCheckout(this.settings, checkoutId, () => this.saveSettings());
-          if (status.kind === "auth-required") {
-            this.settings.billingAccessToken = "";
-            this.settings.billingRefreshToken = "";
-            this.settings.billingAccountLinked = false;
-            await this.saveSettings();
-            if (intervalId !== null) window.clearInterval(intervalId);
-            return;
-          }
-          if (status.kind === "settled") {
-            await syncPurchasedCreditsFromConstance(this);
-            if (intervalId !== null) window.clearInterval(intervalId);
-            return;
-          }
-        }
-        await syncPurchasedCreditsFromConstance(this);
-      } finally {
-        running = false;
-      }
-      if (attempts >= 6 && intervalId !== null) {
-        window.clearInterval(intervalId);
-      }
-    };
-    void poll();
-    intervalId = window.setInterval(() => { void poll(); }, 15000);
+      void (async () => {
+        const settled = checkoutId
+          ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch(() => false)
+          : false;
+        if (settled || !checkoutId) await syncPurchasedCreditsFromConstance(this);
+        if (settled || attempts >= 6) window.clearInterval(intervalId);
+      })();
+    }, 15000);
   }
 
    /**
@@ -506,13 +475,13 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
       return false;
     }
-    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost, () => this.saveSettings());
+    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
     if (free.kind === "ok") {
       this.settings.freeCredits = free.remaining;
       await this.saveSettings();
       return true;
     }
-    if (free.kind === "auth-required") { this.settings.billingAccessToken = ""; this.settings.billingRefreshToken = ""; this.settings.billingAccountLinked = false; await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
+    if (free.kind === "auth-required") { this.settings.billingAccessToken = ""; this.settings.billingAccountLinked = false; await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
     if (free.kind === "error") { new Notice("Culebra: the account allowance could not be verified. No correction was applied."); return false; }
 
     await retryPendingSpendEvents(this);
@@ -572,7 +541,16 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       originalText,
       correctedText,
     ).waitForDecision();
-    if (!shouldApply || !(await this.chargeOneCredit(originalText.length))) {
+    if (!shouldApply) {
+      return;
+    }
+    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
+      new Notice("Culebra: the note changed while you reviewed it. Run the correction again to protect your edits.");
+      return;
+    }
+    if (!(await this.chargeOneCredit(originalText.length))) return;
+    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
+      new Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
       return;
     }
 
@@ -605,7 +583,16 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       originalText,
       correctedText,
     ).waitForDecision();
-    if (!shouldApply || !(await this.chargeOneCredit(originalText.length))) {
+    if (!shouldApply) {
+      return;
+    }
+    if (await this.app.vault.read(file) !== originalText) {
+      new Notice(`Culebra: ${file.name} changed while you reviewed it. Run the correction again to protect your edits.`);
+      return;
+    }
+    if (!(await this.chargeOneCredit(originalText.length))) return;
+    if (await this.app.vault.read(file) !== originalText) {
+      new Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
       return;
     }
 
@@ -758,17 +745,17 @@ class CulebraSettingTab extends PluginSettingTab {
       .setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.")
       .addButton((button) =>
         button.setButtonText("Buy $1 (20,000 characters)").onClick(() => {
-          void this.plugin.openBuyCheckout("usd_001");
+          this.plugin.openBuyCheckout("usd_001");
         }),
       )
       .addButton((button) =>
         button.setButtonText("Buy $5 (160,000 characters)").onClick(() => {
-          void this.plugin.openBuyCheckout("usd_005");
+          this.plugin.openBuyCheckout("usd_005");
         }),
       )
       .addButton((button) =>
         button.setButtonText("Buy $15 (640,000 characters)").onClick(() => {
-          void this.plugin.openBuyCheckout("usd_015");
+          this.plugin.openBuyCheckout("usd_015");
         }),
       );
 

@@ -1,10 +1,16 @@
 # Release Notes
 
+## 4.4.16 - 2026-09-23
+
+Culebra now checks that text has not changed before applying an approved correction.
+The starter allowance description now matches account-linked billing.
+
 ## 4.4.15 - 2026-09-22
 
-Billing maintenance release: uses authenticated Constance checkout with a
-stable idempotency key, refresh-token support, and settlement polling. The
-legacy `/buy` URL is retained only as a hosted-checkout fallback.
+Authenticated Constance billing maintenance: registration now supports the
+current email-verification response, and purchases prefer the authenticated
+catalog-code checkout with idempotent polling while retaining `/buy` only as a
+legacy fallback.
 
 ## 4.4.6 - 2026-09-20
 
