@@ -16,7 +16,7 @@ Culebra corrects spelling, grammar, punctuation, capitalization, and obvious typ
 - **Selected text:** highlight a sentence or paragraph, right-click, and choose **Culebra: Correct selected text**.
 - **Current note:** place the cursor in a note with no selection, then choose **Culebra: Correct current note**.
 - **Markdown file:** right-click a Markdown file in the file explorer and choose **Culebra: Correct this Markdown file**.
-- **Command palette:** search for `Culebra: Correct selection or current note`.
+- **Command palette:** search for `Culebra AI Spell Correct: Correct selection or current note`.
 
 Culebra always shows a **Before / After** preview. Choose **Apply correction** to write the change, or **Cancel** to leave the note untouched. If the note changes while you review the preview, run the correction again. Editor changes can also be undone with Ctrl/Cmd+Z.
 

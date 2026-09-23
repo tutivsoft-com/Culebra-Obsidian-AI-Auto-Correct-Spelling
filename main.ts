@@ -375,7 +375,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
 
     this.addCommand({
       id: "spell-correct",
-      name: "Culebra: Correct selection or current note",
+      name: "Correct selection or current note",
       editorCallback: (editor) => {
         void this.correctEditorText(editor);
       },

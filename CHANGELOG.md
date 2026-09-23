@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.17 - 2026-09-23
+
+- Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.
+
 ## 4.4.16 - 2026-09-23
 
 - Protect notes from stale AI correction previews if they change during review or billing.

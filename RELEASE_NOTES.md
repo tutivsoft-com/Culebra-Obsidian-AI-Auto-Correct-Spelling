@@ -1,3 +1,7 @@
+# Release 4.4.17
+
+- Simplified Obsidian command palette labels by removing repeated plugin-name prefixes.
+
 # Release Notes
 
 ## 4.4.16 - 2026-09-23

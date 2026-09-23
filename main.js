@@ -620,7 +620,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
     );
     this.addCommand({
       id: "spell-correct",
-      name: "Culebra: Correct selection or current note",
+      name: "Correct selection or current note",
       editorCallback: (editor) => {
         void this.correctEditorText(editor);
       }

@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.16` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.17` · [Complete user guide](./docs/USER_GUIDE.md)
 
 ## Features
 
@@ -16,7 +16,7 @@ Version: `4.4.16` · [Complete user guide](./docs/USER_GUIDE.md)
 
 1. Install and enable Culebra AI Spell Correct.
 2. Select text in a note, or place the cursor in a note.
-3. Open the editor context menu and choose **Culebra: Correct selected text** or **Culebra: Correct current note**. You can also use the command palette and choose **Culebra: Correct selection or current note**.
+3. Open the editor context menu and choose **Culebra: Correct selected text** or **Culebra: Correct current note**. You can also use the command palette and choose **Culebra AI Spell Correct: Correct selection or current note**.
 4. Review the before-and-after preview, then choose **Apply correction**. Cancel leaves your note unchanged. If the note changes during review, run the correction again; editor changes can be undone with Ctrl/Cmd+Z.
 5. Configure the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
 
