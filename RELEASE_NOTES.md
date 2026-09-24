@@ -1,4 +1,10 @@
-# Release 4.4.18
+# Release Notes
+
+## 4.4.25 - 2026-09-25
+
+- Updated release metadata and current documentation version references. Plugin behavior is unchanged.
+
+## Previous release — 4.4.18
 
 Documentation and release-metadata update. The plugin runtime behavior is unchanged.
 

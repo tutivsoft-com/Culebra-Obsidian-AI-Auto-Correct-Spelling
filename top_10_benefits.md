@@ -41,7 +41,7 @@
     - **Example:** Clean up first drafts right away using the complimentary 2,000-character starter credit.
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.24)
+## Workflow defaults (v4.4.25)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

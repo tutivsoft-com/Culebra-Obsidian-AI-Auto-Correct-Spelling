@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.25 (2026-09-25)
+
+- Synchronized the release version across release metadata and current product documentation; plugin behavior is unchanged.
+
 ## 4.4.24 (2026-09-24)
 
 - Check free or purchased character eligibility before sending note text to OpenRouter.
