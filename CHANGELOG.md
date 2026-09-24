@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.19 - 2026-09-24
+
+- Pointed the Antero-compatible key loader at this repository's dedicated $2 no-reset OpenRouter manifest.
+
 ## 4.4.18 - 2026-09-24
 
 - Added dedicated feature and marketing documentation and refreshed the release workflow and requirements.

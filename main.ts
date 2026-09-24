@@ -1,6 +1,5 @@
 import {
   Editor,
-  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -23,7 +22,7 @@ const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
 // remains as a user override that takes priority when set.
 const REMOTE_MANIFEST_PASSPHRASE = "Kivu.RemoteKeyManifest.v1.2026D";
 const REMOTE_MANIFEST_URL =
-  "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/tool-app-Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
+  "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
 
 interface EncryptedSecretEnvelope {
   q: number;
@@ -322,7 +321,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 
   async onload() {
-    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a review-first AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command and review the preview before applying."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
+    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a one-action AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
     this.support.start();
     await this.loadSettings();
 
@@ -535,17 +534,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return;
     }
 
-    const shouldApply = await new CorrectionPreviewModal(
-      this.app,
-      target,
-      originalText,
-      correctedText,
-    ).waitForDecision();
-    if (!shouldApply) {
-      return;
-    }
     if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new Notice("Culebra: the note changed while you reviewed it. Run the correction again to protect your edits.");
+      new Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
       return;
     }
     if (!(await this.chargeOneCredit(originalText.length))) return;
@@ -577,17 +567,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return;
     }
 
-    const shouldApply = await new CorrectionPreviewModal(
-      this.app,
-      file.name,
-      originalText,
-      correctedText,
-    ).waitForDecision();
-    if (!shouldApply) {
-      return;
-    }
     if (await this.app.vault.read(file) !== originalText) {
-      new Notice(`Culebra: ${file.name} changed while you reviewed it. Run the correction again to protect your edits.`);
+      new Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
       return;
     }
     if (!(await this.chargeOneCredit(originalText.length))) return;
@@ -612,7 +593,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       apiKey = await this.resolveApiKey();
     } catch (error) {
       console.error("Culebra: failed to resolve an OpenRouter API key", error);
-      new Notice("Culebra could not fetch its built-in API key. Check your connection, or add your own OpenRouter key in settings.");
+      new Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
       return null;
     }
 
@@ -695,11 +676,11 @@ class CulebraSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Getting started" });
     containerEl.createEl("p", {
       text:
-        "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra shows a before-and-after preview before applying anything.",
+        "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo.",
     });
     containerEl.createEl("p", {
       text:
-        "Correction requests send only the text you explicitly choose to OpenRouter. Review the preview carefully before applying it.",
+        "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted.",
     });
 
     new Setting(containerEl)
@@ -787,66 +768,5 @@ class CulebraSettingTab extends PluginSettingTab {
     this.creditsSummaryEl.setText(
       `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`,
     );
-  }
-}
-
-class CorrectionPreviewModal extends Modal {
-  private readonly decision: Promise<boolean>;
-  private resolveDecision!: (accepted: boolean) => void;
-  private settled = false;
-
-  constructor(
-    app: CulebraSpellCorrectPlugin["app"],
-    private readonly targetLabel: string,
-    private readonly originalText: string,
-    private readonly correctedText: string,
-  ) {
-    super(app);
-    this.decision = new Promise((resolve) => {
-      this.resolveDecision = resolve;
-    });
-  }
-
-  waitForDecision(): Promise<boolean> {
-    this.open();
-    return this.decision;
-  }
-
-  onOpen() {
-    this.setTitle(`Review correction: ${this.targetLabel}`);
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("p", {
-      text: "Review the proposed changes. Nothing will be changed until you apply the correction.",
-    });
-
-    const previewGrid = contentEl.createDiv({ cls: "culebra-preview-grid" });
-    const before = previewGrid.createDiv({ cls: "culebra-preview-pane" });
-    before.createEl("h3", { text: "Before" });
-    before.createEl("pre", { cls: "culebra-preview-text", text: this.originalText });
-
-    const after = previewGrid.createDiv({ cls: "culebra-preview-pane" });
-    after.createEl("h3", { text: "After" });
-    after.createEl("pre", { cls: "culebra-preview-text", text: this.correctedText });
-
-    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
-    const cancelButton = buttons.createEl("button", { text: "Cancel" });
-    cancelButton.addEventListener("click", () => this.finish(false));
-    const applyButton = buttons.createEl("button", { text: "Apply correction" });
-    applyButton.classList.add("mod-cta");
-    applyButton.addEventListener("click", () => this.finish(true));
-  }
-
-  onClose() {
-    this.finish(false);
-  }
-
-  private finish(accepted: boolean) {
-    if (this.settled) {
-      return;
-    }
-    this.settled = true;
-    this.resolveDecision(accepted);
-    this.close();
   }
 }

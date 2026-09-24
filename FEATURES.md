@@ -1,6 +1,6 @@
 # Features
 
-Culebra AI Spell Correct provides review-first writing corrections for Obsidian notes.
+Culebra AI Spell Correct provides user-initiated writing corrections for Obsidian notes.
 
 ## Correction targets
 
@@ -11,7 +11,7 @@ Culebra AI Spell Correct provides review-first writing corrections for Obsidian 
 ## Review and formatting safeguards
 
 - Show the proposed result before applying it. Cancel leaves the note unchanged.
-- Check that the note or file has not changed while the preview or billing request is open.
+- Check that the note or file has not changed during the correction or billing request.
 - Apply editor changes through Obsidian so they can be undone with Ctrl+Z or Cmd+Z.
 - Preserve Markdown structure such as headings, lists, tables, links, tags, code, YAML frontmatter, wiki links, embeds, and callouts.
 - Preserve Indian names, places, organizations, and Indian English wording unless they are clearly misspelled.

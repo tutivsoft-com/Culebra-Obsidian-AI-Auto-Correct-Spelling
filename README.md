@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.18` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.19` · [Complete user guide](./docs/USER_GUIDE.md)
 
 Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENTS.md) · [Software architecture](./architecture.md) · [Marketing overview](./MARKETING.md) · [Complete user guide](./docs/USER_GUIDE.md)
 
@@ -19,8 +19,8 @@ Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENT
 1. Install and enable Culebra AI Spell Correct.
 2. Select text in a note, or place the cursor in a note.
 3. Open the editor context menu and choose **Culebra: Correct selected text** or **Culebra: Correct current note**. You can also use the command palette and choose **Culebra AI Spell Correct: Correct selection or current note**.
-4. Review the before-and-after preview, then choose **Apply correction**. Cancel leaves your note unchanged. If the note changes during review, run the correction again; editor changes can be undone with Ctrl/Cmd+Z.
-5. Configure the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
+4. The correction applies when you run the command. Use Ctrl/Cmd+Z to undo an editor change.
+5. Optionally change the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
 
 When text is selected, only the selection is replaced. With no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
 
@@ -29,7 +29,7 @@ When text is selected, only the selection is replaced. With no selection, the cu
 Culebra requires network access to provide AI correction and optional credit management:
 
 - The text being corrected is sent to the OpenRouter chat completions API at `https://openrouter.ai/api/v1/chat/completions`. OpenRouter forwards the request to the model selected in the plugin settings. Do not submit confidential text unless you are comfortable sending it to these services.
-- A user-supplied OpenRouter API key in the plugin settings takes precedence and is stored in local plugin data. If the field is blank, Culebra may use its built-in encrypted key fallback. The key is sent only as authorization to OpenRouter.
+- A user-supplied OpenRouter API key in the plugin settings takes precedence and is stored in local plugin data. If the field is blank, Culebra loads its own capped key from an encrypted manifest. The key is sent only as authorization to OpenRouter.
 - The plugin contacts TutivSoft Constance at `https://app.tutivsoft.com` for authenticated account linking, entitlement reads, free-usage claims, and purchased-credit spends. It sends the plugin ID, a randomly generated installation device ID, and credit transaction data. The device ID is stored in the plugin's local settings.
 - Buying credits first uses authenticated `POST /api/v1/billing/checkout` with a catalog plan code and idempotency key, then polls checkout settlement and refreshes entitlements. The legacy `/buy` URL remains only as a fallback when authenticated checkout cannot return a checkout URL. A billing email is used for account sign-in and the fallback receipt. Payment is optional; the initial 2,000 account-scoped characters can be used without a purchase.
 
@@ -74,3 +74,7 @@ provenance can be verified independently.
 ## License
 
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
+
+## OpenRouter key
+
+AI requests use this repository's own $2 no-reset OpenRouter key from an encrypted remote manifest. A personal key in plugin settings takes priority. The manifest format follows Antero's AES-256-GCM/PBKDF2 loader; the bundled passphrase only obscures the key and cannot prevent extraction from a client.
