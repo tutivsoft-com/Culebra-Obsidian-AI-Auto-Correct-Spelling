@@ -10,7 +10,7 @@ Culebra AI Spell Correct provides user-initiated writing corrections for Obsidia
 
 ## Review and formatting safeguards
 
-- Show the proposed result before applying it. Cancel leaves the note unchanged.
+- Apply the corrected text when the command runs. Obsidian Undo can restore the editor change.
 - Check that the note or file has not changed during the correction or billing request.
 - Apply editor changes through Obsidian so they can be undone with Ctrl+Z or Cmd+Z.
 - Preserve Markdown structure such as headings, lists, tables, links, tags, code, YAML frontmatter, wiki links, embeds, and callouts.
@@ -19,9 +19,9 @@ Culebra AI Spell Correct provides user-initiated writing corrections for Obsidia
 ## Provider and credits
 
 - Select an OpenRouter model in plugin settings.
-- Use a user-supplied OpenRouter API key or the configured managed-key fallback.
+- Use a user-supplied OpenRouter API key or the repository-specific encrypted key manifest.
 - Use the account-linked 2,000-character starter allowance and optional one-time credit packs through TutivSoft Constance.
-- Review the provider, billing, and privacy details before sending note text.
+- Provider, billing, and privacy details are documented; the correction command sends the selected text or note content when launched.
 
 ## Privacy
 

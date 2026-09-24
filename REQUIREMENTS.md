@@ -22,7 +22,7 @@ The plugin must improve the surface quality of the text without changing what th
 - Provider: OpenRouter (`https://openrouter.ai`), an OpenAI-compatible chat completions router.
 - Endpoint family: OpenRouter Chat Completions API (`POST /api/v1/chat/completions`).
 - Default model: `openai/gpt-5-mini` (configurable in settings).
-- A user-supplied OpenRouter API key in settings takes precedence and is stored in local plugin data. When the field is blank, the plugin may use its built-in encrypted key fallback; no key is bundled in the release JavaScript.
+- A user-supplied OpenRouter API key in settings takes precedence and is stored in local plugin data. When the field is blank, the plugin loads its dedicated encrypted key manifest; no key is bundled in the release JavaScript.
 
 OpenRouter documentation checked on 2026-08-16:
 
@@ -72,5 +72,5 @@ The prompt must instruct the model to:
 - Build the plugin successfully with `npm run build`.
 - Run `npm run test:vault-plugin` to validate the deterministic release bundle. Set `CULEBRA_VAULT_CONFIG_DIR` only when intentionally checking a specific installed vault.
 - Run `node --check publish/main.js` and `git diff --check` before packaging.
-- For user-facing verification, use a disposable test vault: correct selected text, preview and cancel once, then apply; repeat for a note and a Markdown file, and verify undo and privacy guidance.
+- For user-facing verification, use a disposable test vault: correct selected text, undo an editor change, then repeat for a note and a Markdown file, and verify undo and privacy guidance.
 - Run the live OpenRouter smoke test only when network access and an intentionally configured test credential are available.

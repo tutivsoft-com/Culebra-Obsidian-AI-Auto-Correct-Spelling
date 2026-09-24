@@ -16,8 +16,8 @@
    - **Benefit:** Choose to correct an entire note or just a highlighted sentence/paragraph.
    - **Example:** Highlight a messy pasted paragraph and run *Culebra: Correct selected text* without touching the rest of your note.
 
-5. **Interactive Before-and-After Preview**
-   - **Benefit:** Review a side-by-side diff of suggested changes before applying them to the file.
+5. **One-action corrections**
+   - **Benefit:** Apply the correction when you run the command and use Undo for editor changes if needed.
    - **Example:** Inspect a side-by-side diff modal showing additions in green and deletions in red before committing.
 
 6. **File Explorer Context Menu Integration**
@@ -30,7 +30,7 @@
 
 8. **Bring Your Own Key (BYOK) or Built-In Access**
    - **Benefit:** Flexibility to use your personal OpenRouter API key or start immediately with zero setup.
-   - **Example:** Paste a personal OpenRouter key in settings to bypass third-party billing limits.
+   - **Example:** Optionally add a personal OpenRouter key in settings to override the built-in key.
 
 9. **Safety & Full Undo Support**
    - **Benefit:** Revert corrections instantly if the result does not match expectations.

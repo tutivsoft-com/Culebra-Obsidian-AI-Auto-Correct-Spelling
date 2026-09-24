@@ -31,7 +31,7 @@ flowchart TB
     LoadData --> Vault[Obsidian Vault<br/>plugins/.../data.json]
 ```
 
-The plugin is a single TypeScript module (`main.ts`) that registers three entry surfaces — editor context menu, file explorer context menu, and a command palette entry — all converging on one private `correctText` helper. It previews the result before applying it, then charges `ceil(input characters / 1000)` credits before calling OpenRouter with the configured provider.
+The plugin is a single TypeScript module (`main.ts`) that registers three entry surfaces — editor context menu, file explorer context menu, and a command palette entry — all converging on one private `correctText` helper. It checks billing authorization, sends the selected text to OpenRouter, and applies a nonempty correction immediately when the note has not changed in the meantime.
 
 ## 2. Data Flow
 
@@ -54,7 +54,7 @@ sequenceDiagram
         P->>C: POST /api/v1/billing/credits/spend (character cost, bearer account token)
         C-->>P: new balance, or 402/404 insufficient, or error
     end
-    P->>P: Read local OpenRouter API key
+    P->>P: Resolve optional personal key or this repository's encrypted manifest
     P->>O: POST /api/v1/chat/completions (messages)
     O-->>P: Corrected text (choices[0].message.content)
     P->>V: editor.replaceSelection / editor.setValue / vault.modify
@@ -108,12 +108,12 @@ The plugin persists a single setting object through Obsidian's `Plugin.loadData`
 - `freeCredits: number` — local display mirror of the account-scoped allowance returned by Constance.
 - `purchasedCredits: number` — local mirror of the authenticated Constance `CreditBalance`.
 
-The `apiKey` field is supplied by the user and stored in the vault's local plugin data. It is used only as the authorization credential for OpenRouter requests and is never bundled into the release.
+The optional `apiKey` override is stored in vault-local plugin data. When blank, the plugin decrypts this repository's own remote manifest at runtime. Plaintext key values are not bundled into the release.
 
 ### Plugin metadata (manifest.json)
 - `id`: `culebra-ai-spell-correct`
 - `name`: `Culebra AI Spell Correct`
-- `version`: `4.4.18`
+- `version`: `4.4.19`
 - `minAppVersion`: `1.5.0`
 - `isDesktopOnly`: `false`
 
@@ -144,7 +144,7 @@ Runtime (declared in `devDependencies` of `package.json`, `obsidian` provides th
 - `builtin-modules ^5.0.0`
 
 External services:
-- OpenRouter Chat Completions API (`https://openrouter.ai/api/v1/chat/completions`), model `openai/gpt-5-mini` default. OpenAI-compatible request/response shape. Authenticated with the user-supplied local key.
+- OpenRouter Chat Completions API (`https://openrouter.ai/api/v1/chat/completions`), model `~deepseek/deepseek-v4-flash-latest` default. OpenAI-compatible request/response shape. Authenticated with the user-supplied local key.
 - Constance / TutivSoft central billing (`https://app.tutivsoft.com`) — authenticated account registration/login/verification, installation linking, entitlement reads, free-usage claims, credit spends, catalog-code checkout, and checkout-status polling under `/api/v1/auth/*` and `/api/v1/billing/*`; `/buy` is a legacy fallback only.
 
 Vault target:
@@ -152,7 +152,7 @@ Vault target:
 
 ## 6. Operational Notes
 
-- `VERSION` = `4.4.18`; `package.json` and `publish/manifest.json` carry the same version.
-- The OpenRouter key is entered by the user and stored in local plugin data. It is never bundled into the plugin source or release JavaScript.
+- `VERSION` = `4.4.19`; `package.json` and `publish/manifest.json` carry the same version.
+- A personal OpenRouter key is optional. By default the plugin decrypts its dedicated remote manifest; plaintext key values are not bundled into plugin source or release JavaScript.
 - Constance's three live one-time catalog prices remain mapped to the $1/$5/$15 packs. The Buy buttons send catalog plan codes (`standard`, `pro`, `ultimate`) to authenticated checkout with idempotency and poll settlement; the stored Paddle price ids are used only by the legacy `/buy` fallback.
 - The `start.sh` metadata entry-point intentionally documents the boot path and exits 0; the actual operational command is `npm run deploy:vault` per `package.json`.

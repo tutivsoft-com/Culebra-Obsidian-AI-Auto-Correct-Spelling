@@ -4,12 +4,12 @@
 
 Culebra corrects spelling, grammar, punctuation, capitalization, and obvious typing mistakes while preserving Markdown structure and meaning.
 
-## First setup
+## Get started
 
 1. Install and enable **Culebra AI Spell Correct** in Obsidian.
 2. Open **Settings → Community plugins → Culebra AI Spell Correct**.
-3. Read the privacy note, choose an OpenRouter model, and enter your own OpenRouter API key if required by your setup.
-4. Start with a short, non-confidential note so you can review the result.
+3. Use the default model and built-in key, or change either later in settings.
+4. Start with a short, non-confidential note and run a correction.
 
 ## Correct text
 
@@ -18,7 +18,7 @@ Culebra corrects spelling, grammar, punctuation, capitalization, and obvious typ
 - **Markdown file:** right-click a Markdown file in the file explorer and choose **Culebra: Correct this Markdown file**.
 - **Command palette:** search for `Culebra AI Spell Correct: Correct selection or current note`.
 
-Culebra always shows a **Before / After** preview. Choose **Apply correction** to write the change, or **Cancel** to leave the note untouched. If the note changes while you review the preview, run the correction again. Editor changes can also be undone with Ctrl/Cmd+Z.
+Culebra applies a correction when you run the command. If the note changes while the request is in progress, it keeps the newer text. Undo an editor correction with Ctrl/Cmd+Z.
 
 ### Example
 
@@ -34,7 +34,7 @@ Possible result:
 Meeting with the client tomorrow; don't forget the new proposal.
 ```
 
-Review names, dates, links, code, and meaning before applying any AI result.
+After correction, check names, dates, links, code, and meaning; use Obsidian Undo if needed.
 
 ## Markdown and privacy behavior
 
@@ -49,7 +49,7 @@ available one-time packs. Purchases open authenticated Constance checkout and
 refresh after settlement, with the legacy checkout page used only if the
 authenticated checkout cannot return a URL. If a request fails, check the
 model ID, provider configuration, network connection, and displayed balance. A
-correction is not applied unless you approve its preview.
+correction is applied when you run the command, if the note is still unchanged.
 
 ## Limitations
 

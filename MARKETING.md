@@ -11,7 +11,7 @@ Culebra is for people who draft and maintain Markdown notes in Obsidian, includi
 ## Product benefits
 
 - Work on a selection, the current note, or a Markdown file from the file explorer.
-- Review the suggested correction before applying it; cancel without changing the note.
+- Run a correction in one action; undo an editor change with Ctrl/Cmd+Z if needed.
 - Keep links, code, frontmatter, wiki links, and other Markdown structures intact.
 - Preserve Indian names, places, organizations, and common Indian English wording.
 - Choose an OpenRouter model and use the account-linked starter allowance or optional credit packs.
@@ -22,4 +22,4 @@ The user explicitly starts each correction. The text being corrected is sent to 
 
 ## Short description
 
-Review-first AI spelling and grammar correction for Obsidian, with Markdown-aware safeguards and a clear preview before edits are applied.
+One-action AI spelling and grammar correction for Obsidian, with Markdown-aware safeguards and Undo for editor changes.
