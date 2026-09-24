@@ -23,3 +23,9 @@ The user explicitly starts each correction. The text being corrected is sent to 
 ## Short description
 
 One-action AI spelling and grammar correction for Obsidian, with Markdown-aware safeguards and Undo for editor changes.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v4.4.23)
+
+Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+<!-- one-click-workflow:end -->

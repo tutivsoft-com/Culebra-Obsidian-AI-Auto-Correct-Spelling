@@ -132,3 +132,9 @@ Verification completed:
 - `npm run build`
 - `npm run test:api`
 - `npm run test:vault-plugin`
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v4.4.23)
+
+Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+<!-- one-click-workflow:end -->

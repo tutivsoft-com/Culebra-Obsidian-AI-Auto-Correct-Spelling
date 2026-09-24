@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.4.23 (2026-09-24)
+
+- Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+
+
 ## 4.4.22
 
 - Added optional before/after review while keeping correction one-click by default.

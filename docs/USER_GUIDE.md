@@ -54,3 +54,9 @@ correction is applied when you run the command, if the note is still unchanged.
 ## Limitations
 
 AI output can still be wrong. Culebra does not replace careful review, and live Obsidian behavior requires an installed Obsidian desktop or mobile environment.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v4.4.23)
+
+Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+<!-- one-click-workflow:end -->

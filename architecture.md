@@ -156,3 +156,9 @@ Vault target:
 - A personal OpenRouter key is optional. By default the plugin decrypts its dedicated remote manifest; plaintext key values are not bundled into plugin source or release JavaScript.
 - Constance's three live one-time catalog prices remain mapped to the $1/$5/$15 packs. The Buy buttons send catalog plan codes (`standard`, `pro`, `ultimate`) to authenticated checkout with idempotency and poll settlement; the stored Paddle price ids are used only by the legacy `/buy` fallback.
 - The `start.sh` metadata entry-point intentionally documents the boot path and exits 0; the actual operational command is `npm run deploy:vault` per `package.json`.
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v4.4.23)
+
+Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+<!-- one-click-workflow:end -->

@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.19` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.23` · [Complete user guide](./docs/USER_GUIDE.md)
 
 Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENTS.md) · [Software architecture](./architecture.md) · [Marketing overview](./MARKETING.md) · [Complete user guide](./docs/USER_GUIDE.md)
 
@@ -74,3 +74,9 @@ provenance can be verified independently.
 ## License
 
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
+
+<!-- one-click-workflow:start -->
+## Workflow defaults (v4.4.23)
+
+Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
+<!-- one-click-workflow:end -->
