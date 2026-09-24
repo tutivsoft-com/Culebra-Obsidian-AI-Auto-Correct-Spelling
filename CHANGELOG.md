@@ -1,8 +1,13 @@
 # Changelog
 
+## 4.4.22
+
+- Added optional before/after review while keeping correction one-click by default.
+
+
 ## 4.4.19 - 2026-09-24
 
-- Pointed the Antero-compatible key loader at this repository's dedicated $2 no-reset OpenRouter manifest.
+- Applied requested corrections immediately with Undo available; the repository's dedicated capped OpenRouter key loads automatically.
 
 ## 4.4.18 - 2026-09-24
 

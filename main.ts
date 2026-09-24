@@ -1,5 +1,6 @@
 import {
   Editor,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -22,7 +23,7 @@ const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
 // remains as a user override that takes priority when set.
 const REMOTE_MANIFEST_PASSPHRASE = "Kivu.RemoteKeyManifest.v1.2026D";
 const REMOTE_MANIFEST_URL =
-  "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
+  "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/tool-app-Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
 
 interface EncryptedSecretEnvelope {
   q: number;
@@ -280,6 +281,7 @@ interface CulebraSettings {
   // outcomes stay here and are retried with the same event ID after restart.
   pendingSpendEvents: Array<{ eventId: string; amount: number }>;
   onboardingSeen: boolean;
+  reviewBeforeApply: boolean;
 }
 
 const DEFAULT_SETTINGS: CulebraSettings = {
@@ -293,12 +295,12 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   purchasedCredits: 0,
   pendingSpendEvents: [],
   onboardingSeen: false,
+  reviewBeforeApply: false,
 };
 
 /**
- * Coordinates Culebra's user-facing correction flow: resolve a provider,
- * preview the proposed edit, ask for confirmation, then apply one reversible
- * change to the selection, note, or chosen file.
+ * Coordinates Culebra's one-command correction flow. Optional review is
+ * available from settings and is off by default.
  */
 export default class CulebraSpellCorrectPlugin extends Plugin {
   support!: PluginSupport;
@@ -534,6 +536,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return;
     }
 
+    if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult())) return;
     if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
       new Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
       return;
@@ -553,7 +556,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     new Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
   }
 
-   /** Preview and, after approval, replace the contents of one Markdown file. */
+   /** Replace a Markdown file after optional Settings-based before/after review. */
    private async correctFile(file: TFile) {
     const originalText = await this.app.vault.read(file);
     const correctedText = await this.correctText(originalText, file.name);
@@ -571,6 +574,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
       return;
     }
+    if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult())) return;
     if (!(await this.chargeOneCredit(originalText.length))) return;
     if (await this.app.vault.read(file) !== originalText) {
       new Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
@@ -639,6 +643,25 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 }
 
+class CorrectionReviewModal extends Modal {
+  private resolveResult!: (approved: boolean) => void;
+  private settled = false;
+  constructor(app: CulebraSpellCorrectPlugin["app"], private target: string, private before: string, private after: string) { super(app); }
+  waitForResult(): Promise<boolean> { this.open(); return new Promise((resolve) => { this.resolveResult = resolve; }); }
+  onOpen() {
+    this.contentEl.createEl("h2", { text: `Review correction: ${this.target}` });
+    const diff = this.contentEl.createEl("pre", { text: `BEFORE\n${this.before}\n\nAFTER\n${this.after}` });
+    diff.style.whiteSpace = "pre-wrap";
+    diff.style.maxHeight = "55vh";
+    diff.style.overflow = "auto";
+    const actions = this.contentEl.createDiv();
+    actions.createEl("button", { text: "Cancel" }).onclick = () => this.finish(false);
+    actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = () => this.finish(true);
+  }
+  private finish(approved: boolean) { if (this.settled) return; this.settled = true; this.resolveResult(approved); this.close(); }
+  onClose() { if (!this.settled) { this.settled = true; this.resolveResult(false); } this.contentEl.empty(); }
+}
+
 function extractResponseText(responseJson: unknown): string {
   if (!responseJson || typeof responseJson !== "object") {
     return "";
@@ -678,6 +701,11 @@ class CulebraSettingTab extends PluginSettingTab {
       text:
         "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo.",
     });
+
+    new Setting(containerEl)
+      .setName("Review before applying")
+      .setDesc("Off by default for one-click corrections. Turn on to see a before/after review for each correction.")
+      .addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveSettings(); }));
     containerEl.createEl("p", {
       text:
         "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted.",

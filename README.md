@@ -19,7 +19,7 @@ Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENT
 1. Install and enable Culebra AI Spell Correct.
 2. Select text in a note, or place the cursor in a note.
 3. Open the editor context menu and choose **Culebra: Correct selected text** or **Culebra: Correct current note**. You can also use the command palette and choose **Culebra AI Spell Correct: Correct selection or current note**.
-4. The correction applies when you run the command. Use Ctrl/Cmd+Z to undo an editor change.
+4. Corrections apply when you run the command. Turn on **Review before applying** in plugin settings only if you want a before/after approval window. Use Ctrl/Cmd+Z to undo an editor change.
 5. Optionally change the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
 
 When text is selected, only the selection is replaced. With no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
@@ -74,7 +74,3 @@ provenance can be verified independently.
 ## License
 
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
-
-## OpenRouter key
-
-AI requests use this repository's own $2 no-reset OpenRouter key from an encrypted remote manifest. A personal key in plugin settings takes priority. The manifest format follows Antero's AES-256-GCM/PBKDF2 loader; the bundled passphrase only obscures the key and cannot prevent extraction from a client.
