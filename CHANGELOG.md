@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.24 (2026-09-24)
+
+- Check free or purchased character eligibility before sending note text to OpenRouter.
+
 ## 4.4.23 (2026-09-24)
 
 - Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.

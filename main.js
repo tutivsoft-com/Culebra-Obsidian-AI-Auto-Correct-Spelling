@@ -509,6 +509,11 @@ async function fetchConstanceEntitlements(plugin) {
     headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false
   });
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    plugin.settings.billingAccessToken = "";
+    plugin.settings.billingAccountLinked = false;
+    await plugin.saveSettings();
+  }
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
   }
@@ -546,6 +551,36 @@ async function retryPendingSpendEvents(plugin) {
     if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
     else plugin.settings.purchasedCredits = 0;
     await plugin.saveSettings();
+  }
+}
+async function checkBillingBeforeAi(plugin, amount) {
+  var _a, _b;
+  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
+    new import_obsidian3.Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
+    return false;
+  }
+  await retryPendingSpendEvents(plugin);
+  if (plugin.settings.pendingSpendEvents.length > 0) {
+    new import_obsidian3.Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
+    return false;
+  }
+  try {
+    const entitlement = await fetchConstanceEntitlements(plugin);
+    const freeRemaining = Math.max(0, Number((_a = entitlement == null ? void 0 : entitlement.free_usage) == null ? void 0 : _a.remaining) || 0);
+    const paidBalance = Math.max(0, Number((_b = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _b.balance) || 0);
+    plugin.settings.freeCredits = freeRemaining;
+    plugin.settings.purchasedCredits = paidBalance;
+    await plugin.saveSettings();
+    if (freeRemaining >= amount || paidBalance >= amount) return true;
+    new import_obsidian3.Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
+    return false;
+  } catch (e) {
+    if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
+      new import_obsidian3.Notice("Culebra: your billing session expired. Sign in again before using AI.");
+    } else {
+      new import_obsidian3.Notice("Culebra: billing could not be verified. No AI request was sent.");
+    }
+    return false;
   }
 }
 var DEFAULT_SETTINGS = {
@@ -817,6 +852,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Culebra found no text to correct.");
       return null;
     }
+    const cost = Math.max(1, Math.ceil(originalText.length));
+    if (!await checkBillingBeforeAi(this, cost)) return null;
     let apiKey;
     try {
       apiKey = await this.resolveApiKey();

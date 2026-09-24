@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.23` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.24` · [Complete user guide](./docs/USER_GUIDE.md)
 
 Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENTS.md) · [Software architecture](./architecture.md) · [Marketing overview](./MARKETING.md) · [Complete user guide](./docs/USER_GUIDE.md)
 
@@ -31,6 +31,7 @@ Culebra requires network access to provide AI correction and optional credit man
 - The text being corrected is sent to the OpenRouter chat completions API at `https://openrouter.ai/api/v1/chat/completions`. OpenRouter forwards the request to the model selected in the plugin settings. Do not submit confidential text unless you are comfortable sending it to these services.
 - A user-supplied OpenRouter API key in the plugin settings takes precedence and is stored in local plugin data. If the field is blank, Culebra loads its own capped key from an encrypted manifest. The key is sent only as authorization to OpenRouter.
 - The plugin contacts TutivSoft Constance at `https://app.tutivsoft.com` for authenticated account linking, entitlement reads, free-usage claims, and purchased-credit spends. It sends the plugin ID, a randomly generated installation device ID, and credit transaction data. The device ID is stored in the plugin's local settings.
+- Before sending selected note text to OpenRouter, Culebra checks that the linked account has enough free or purchased characters. It claims or spends usage only after the correction is accepted for applying.
 - Buying credits first uses authenticated `POST /api/v1/billing/checkout` with a catalog plan code and idempotency key, then polls checkout settlement and refreshes entitlements. The legacy `/buy` URL remains only as a fallback when authenticated checkout cannot return a checkout URL. A billing email is used for account sign-in and the fallback receipt. Payment is optional; the initial 2,000 account-scoped characters can be used without a purchase.
 
 The plugin does not include client-side telemetry, advertising, self-updating, dependency installation, or access to files outside the current Obsidian vault. It does not collect or transmit note content except when the user explicitly invokes correction.
@@ -76,7 +77,7 @@ provenance can be verified independently.
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.23)
+## Workflow defaults (v4.4.24)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

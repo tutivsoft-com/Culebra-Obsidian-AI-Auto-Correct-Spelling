@@ -217,6 +217,11 @@ async function fetchConstanceEntitlements(plugin: CulebraSpellCorrectPlugin): Pr
     headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false,
   });
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    plugin.settings.billingAccessToken = "";
+    plugin.settings.billingAccountLinked = false;
+    await plugin.saveSettings();
+  }
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
   }
@@ -260,6 +265,36 @@ async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promi
     if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
     else plugin.settings.purchasedCredits = 0;
     await plugin.saveSettings();
+  }
+}
+
+async function checkBillingBeforeAi(plugin: CulebraSpellCorrectPlugin, amount: number): Promise<boolean> {
+  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
+    new Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
+    return false;
+  }
+  await retryPendingSpendEvents(plugin);
+  if (plugin.settings.pendingSpendEvents.length > 0) {
+    new Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
+    return false;
+  }
+  try {
+    const entitlement = await fetchConstanceEntitlements(plugin);
+    const freeRemaining = Math.max(0, Number(entitlement?.free_usage?.remaining) || 0);
+    const paidBalance = Math.max(0, Number(entitlement?.credits?.balance) || 0);
+    plugin.settings.freeCredits = freeRemaining;
+    plugin.settings.purchasedCredits = paidBalance;
+    await plugin.saveSettings();
+    if (freeRemaining >= amount || paidBalance >= amount) return true;
+    new Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
+    return false;
+  } catch {
+    if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
+      new Notice("Culebra: your billing session expired. Sign in again before using AI.");
+    } else {
+      new Notice("Culebra: billing could not be verified. No AI request was sent.");
+    }
+    return false;
   }
 }
 
@@ -591,6 +626,9 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice("Culebra found no text to correct.");
       return null;
     }
+
+    const cost = Math.max(1, Math.ceil(originalText.length));
+    if (!(await checkBillingBeforeAi(this, cost))) return null;
 
     let apiKey: string;
     try {
