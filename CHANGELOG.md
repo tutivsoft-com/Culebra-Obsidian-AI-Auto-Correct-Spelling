@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.4.30 (2026-09-25)
+
+- Updated app version metadata.
+
+## 4.4.29 (2026-09-25)
+
+- Added privacy-safe, copyable session diagnostics in settings and the command palette, with command and runtime error logging.
+
 ## 4.4.28 (2026-09-25)
 
 - Synchronized version metadata and the packaged runtime across the source and public release repositories.

@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.28` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.30` · [Complete user guide](./docs/USER_GUIDE.md)
 
 Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENTS.md) · [Software architecture](./architecture.md) · [Marketing overview](./MARKETING.md) · [Complete user guide](./docs/USER_GUIDE.md)
 
@@ -25,7 +25,7 @@ Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENT
 
 Use **Show AI request queue** in the command palette or Settings to see the current correction, its text excerpt, elapsed seconds, and completion. If several corrections are started, Culebra sends them one at a time; clearing the waiting queue leaves the active correction running.
 
-ohen text is selected, only the selection is replaced. oith no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
+When text is selected, only the selection is replaced. With no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
 
 ## Network Use and Privacy
 
@@ -38,6 +38,8 @@ Culebra requires network access to provide AI correction and optional credit man
 - Buying credits first uses authenticated `POST /api/v1/billing/checkout` with a catalog plan code and idempotency key, then polls checkout settlement and refreshes entitlements. The legacy `/buy` URL remains only as a fallback when authenticated checkout cannot return a checkout URL. A billing email is used for account sign-in and the fallback receipt. Payment is optional; the initial 2,000 account-scoped characters can be used without a purchase.
 
 The plugin does not include client-side telemetry, advertising, self-updating, dependency installation, or access to files outside the current Obsidian vault. It does not collect or transmit note content except when the user explicitly invokes correction.
+
+Diagnostic events are kept in memory until the plugin reloads, up to 1,000 events. They include command outcomes, timing, and safe error types; note contents, file paths, credentials, and raw error messages are excluded. Diagnostics are not transmitted automatically. A copied log includes the plugin ID and version, timestamps, safe events, and your browser user agent.
 
 ## Limitations
 

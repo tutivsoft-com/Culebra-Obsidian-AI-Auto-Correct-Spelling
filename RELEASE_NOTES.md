@@ -1,5 +1,14 @@
 # Release Notes
 
+## 4.4.30 - 2026-09-25
+
+This release collects the recent improvements since 4.4.18:
+
+- Corrections apply immediately, with Undo available; review before applying remains optional.
+- Billing eligibility is checked before note text is sent to OpenRouter.
+- A serialized request queue shows progress and lets you clear waiting requests.
+- Copy up to 1,000 command and runtime diagnostic events from Settings or the command palette. Logs omit note contents, file paths, credentials, and raw error messages; copied logs also include the plugin ID, version, timestamps, and browser user agent.
+
 ## 4.4.28 - 2026-09-25
 
 - Synchronized version metadata and the packaged runtime across the source and public release repositories.

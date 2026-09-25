@@ -415,9 +415,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     this.addCommand({
       id: "spell-correct",
       name: "Correct selection or current note",
-      editorCallback: (editor) => {
-        void this.correctEditorText(editor);
-      },
+      editorCallback: (editor) => this.correctEditorText(editor),
     });
     this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
 
@@ -737,6 +735,7 @@ class CulebraSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    this.plugin.support.addDiagnosticsSetting(containerEl);
 
     containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
 
