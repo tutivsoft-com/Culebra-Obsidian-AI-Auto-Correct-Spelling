@@ -1,0 +1,27 @@
+.culebra-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--size-4-4);
+}
+
+.culebra-preview-pane {
+  min-width: 0;
+}
+
+.culebra-preview-text {
+  max-height: 45vh;
+  margin: 0;
+  overflow: auto;
+  padding: var(--size-4-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+@media (max-width: 700px) {
+  .culebra-preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
