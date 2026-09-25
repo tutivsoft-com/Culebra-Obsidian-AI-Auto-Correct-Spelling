@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   attest:
+    if: github.repository == 'tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling'
     runs-on: ubuntu-latest
     steps:
       - name: Download release assets
