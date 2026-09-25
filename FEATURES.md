@@ -28,7 +28,7 @@ Culebra AI Spell Correct provides user-initiated writing corrections for Obsidia
 Culebra sends note text to the configured OpenRouter model only after the user invokes a correction. Billing requests go to TutivSoft Constance and include the plugin installation and transaction details needed to check usage. Culebra has no client-side telemetry or advertising and does not read files outside the current vault.
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.25)
+## Workflow defaults (v4.4.24)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

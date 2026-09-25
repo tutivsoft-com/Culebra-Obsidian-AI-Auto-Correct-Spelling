@@ -1,6 +1,6 @@
 # Culebra AI Spell Correct Requirements
 
-Current plugin version: 4.4.25. This is a documentation and release-metadata update; runtime requirements are unchanged.
+Current plugin version: 4.4.24. This is a documentation and release-metadata update; runtime requirements are unchanged.
 
 ## Purpose
 
@@ -76,7 +76,7 @@ The prompt must instruct the model to:
 - Run the live OpenRouter smoke test only when network access and an intentionally configured test credential are available.
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.25)
+## Workflow defaults (v4.4.24)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

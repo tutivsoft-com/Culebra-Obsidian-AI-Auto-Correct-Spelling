@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.4.28 (2026-09-25)
+
+- Synchronized version metadata and the packaged runtime across the source and public release repositories.
+
+
 ## 4.4.27 (2026-09-25)
 
 - Show each correction's submitted text excerpt and elapsed time in a live queue, then report when it completes.
