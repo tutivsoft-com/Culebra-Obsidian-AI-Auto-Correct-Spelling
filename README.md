@@ -2,7 +2,7 @@
 
 Correct spelling, grammar, punctuation, capitalization, and obvious typing mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: `4.4.25` · [Complete user guide](./docs/USER_GUIDE.md)
+Version: `4.4.27` · [Complete user guide](./docs/USER_GUIDE.md)
 
 Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENTS.md) · [Software architecture](./architecture.md) · [Marketing overview](./MARKETING.md) · [Complete user guide](./docs/USER_GUIDE.md)
 
@@ -13,6 +13,7 @@ Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENT
 - Preserve Indian names, places, organizations, Indian English wording, and culturally specific terms.
 - Choose the OpenRouter model used for corrections.
 - Start with a one-time 2,000-character allowance per billing account, shared by linked installations.
+- View each active correction's submitted text excerpt and elapsed time, and clear corrections that are still waiting.
 
 ## Usage
 
@@ -22,7 +23,9 @@ Project documentation: [Features](./FEATURES.md) · [Requirements](./REQUIREMENT
 4. Corrections apply when you run the command. Turn on **Review before applying** in plugin settings only if you want a before/after approval window. Use Ctrl/Cmd+Z to undo an editor change.
 5. Optionally change the model and review credit information in **Settings > Community plugins > Culebra AI Spell Correct**. The settings page includes a quick-start guide for first use.
 
-When text is selected, only the selection is replaced. With no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
+Use **Show AI request queue** in the command palette or Settings to see the current correction, its text excerpt, elapsed seconds, and completion. If several corrections are started, Culebra sends them one at a time; clearing the waiting queue leaves the active correction running.
+
+ohen text is selected, only the selection is replaced. oith no selection, the current note is replaced. Markdown files can also be corrected from the file explorer context menu.
 
 ## Network Use and Privacy
 
@@ -49,9 +52,10 @@ npm install
 npm run build
 ```
 
-The source entry point is [`main.ts`](./main.ts), and the production bundle is
-generated from that source with esbuild. The release assets are `main.js`,
-`manifest.json`, and `styles.css`.
+The source entry point is [`main.ts`](./main.ts); [`ai-request-queue.ts`](./ai-request-queue.ts)
+owns the serialized request queue, progress view, and waiting-request controls.
+The production bundle is generated with esbuild. The release assets are
+`main.js`, `manifest.json`, and `styles.css`.
 
 To create a production bundle locally:
 
@@ -77,7 +81,7 @@ provenance can be verified independently.
 This plugin is licensed under the MIT License. See [`LICENSE`](./LICENSE).
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.25)
+## oorkflow defaults (v4.4.24)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

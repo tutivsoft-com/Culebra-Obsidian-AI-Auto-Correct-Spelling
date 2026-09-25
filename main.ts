@@ -10,6 +10,7 @@ import {
 } from "obsidian";
 import { addBillingAccountSettings, claimAccountFreeUsage, createAuthenticatedCheckout, pollAuthenticatedCheckout, spendAccountCredits } from "./constance-account";
 import { PluginSupport } from "./plugin-support";
+import { AiRequestQueue } from "./ai-request-queue";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
@@ -340,6 +341,7 @@ const DEFAULT_SETTINGS: CulebraSettings = {
 export default class CulebraSpellCorrectPlugin extends Plugin {
   support!: PluginSupport;
   settings: CulebraSettings = DEFAULT_SETTINGS;
+  aiQueue!: AiRequestQueue;
   // Cached once resolved so every correction doesn't re-fetch the manifest;
   // cleared and retried on failure in case the key was rotated mid-session.
   private remoteApiKeyCache: string | null = null;
@@ -361,6 +363,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a one-action AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
     this.support.start();
     await this.loadSettings();
+    this.aiQueue = new AiRequestQueue(this.app, "Culebra");
 
     if (!this.settings.constanceDeviceId) {
       this.settings.constanceDeviceId = generateSecureDeviceId();
@@ -416,6 +419,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
         void this.correctEditorText(editor);
       },
     });
+    this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
 
     this.addSettingTab(new CulebraSettingTab(this.app, this));
     // Background balance sync; never blocks load, fails silently offline.
@@ -627,57 +631,59 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return null;
     }
 
-    const cost = Math.max(1, Math.ceil(originalText.length));
-    if (!(await checkBillingBeforeAi(this, cost))) return null;
+    const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report) => {
+      report({ label: "Checking billing eligibility", submittedText: originalText });
+      const cost = Math.max(1, Math.ceil(originalText.length));
+      if (!(await checkBillingBeforeAi(this, cost))) return null;
 
-    let apiKey: string;
-    try {
-      apiKey = await this.resolveApiKey();
-    } catch (error) {
-      console.error("Culebra: failed to resolve an OpenRouter API key", error);
-      new Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
-      return null;
-    }
+      let apiKey: string;
+      try {
+        report({ label: "Resolving OpenRouter connection", submittedText: originalText });
+        apiKey = await this.resolveApiKey();
+      } catch (error) {
+        console.error("Culebra: failed to resolve an OpenRouter API key", error);
+        new Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
+        return null;
+      }
 
-    new Notice(`Culebra is correcting ${targetLabel}...`);
+      try {
+        report({ label: "Sending text to OpenRouter", submittedText: originalText });
+        const response = await requestUrl({
+          url: OPENROUTER_CHAT_COMPLETIONS_URL,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: this.settings.model.trim() || DEFAULT_MODEL,
+            messages: [
+              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+              { role: "user", content: originalText },
+            ],
+          }),
+          throw: false,
+        });
 
-    try {
-      const response = await requestUrl({
-        url: OPENROUTER_CHAT_COMPLETIONS_URL,
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.settings.model.trim() || DEFAULT_MODEL,
-          messages: [
-            { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
-            { role: "user", content: originalText },
-          ],
-        }),
-        throw: false,
-      });
+        if (response.status < 200 || response.status >= 300) {
+          console.error("Culebra AI Spell Correct failed", response.status, response.text);
+          new Notice("Culebra correction failed. Check the developer console.");
+          return null;
+        }
 
-      if (response.status < 200 || response.status >= 300) {
-        console.error("Culebra AI Spell Correct failed", response.status, response.text);
+        const correctedText = extractResponseText(response.json);
+        if (!correctedText.trim()) {
+          new Notice("Culebra received an empty response; no changes made.");
+          return null;
+        }
+        return correctedText;
+      } catch (error) {
+        console.error("Culebra AI Spell Correct failed", error);
         new Notice("Culebra correction failed. Check the developer console.");
         return null;
       }
-
-      const correctedText = extractResponseText(response.json);
-
-      if (!correctedText.trim()) {
-        new Notice("Culebra received an empty response; no changes made.");
-        return null;
-      }
-
-      return correctedText;
-    } catch (error) {
-      console.error("Culebra AI Spell Correct failed", error);
-      new Notice("Culebra correction failed. Check the developer console.");
-      return null;
-    }
+    });
+    return queued.status === "completed" ? queued.value : null;
   }
 }
 
@@ -748,6 +754,10 @@ class CulebraSettingTab extends PluginSettingTab {
       text:
         "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted.",
     });
+    new Setting(containerEl)
+      .setName("AI request queue")
+      .setDesc("View the active correction, elapsed time and text excerpt, or remove waiting corrections.")
+      .addButton((button) => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
 
     new Setting(containerEl)
       .setName("Model")

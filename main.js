@@ -26,7 +26,7 @@ __export(main_exports, {
   default: () => CulebraSpellCorrectPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // publish/constance-account.ts
 var import_obsidian = require("obsidian");
@@ -359,6 +359,135 @@ var PluginSupport = class {
   }
 };
 
+// publish/ai-request-queue.ts
+var import_obsidian3 = require("obsidian");
+var AiRequestQueue = class extends import_obsidian3.Modal {
+  constructor(app, appName) {
+    super(app);
+    this.appName = appName;
+    this.pending = [];
+    this.active = null;
+    this.running = false;
+    this.opened = false;
+    this.nextId = 1;
+    this.timer = null;
+    this.lastCompletion = "";
+  }
+  onOpen() {
+    this.opened = true;
+    this.startTimer();
+    this.render();
+  }
+  onClose() {
+    this.opened = false;
+    if (this.timer !== null) window.clearInterval(this.timer);
+    this.timer = null;
+    this.contentEl.empty();
+  }
+  enqueue(label, submittedText, run) {
+    return new Promise((resolve) => {
+      const job = {
+        id: this.nextId++,
+        label,
+        submittedText,
+        queuedAt: Date.now(),
+        statusLabel: "Waiting",
+        run,
+        resolve
+      };
+      this.pending.push(job);
+      if (!this.opened) this.open();
+      this.render();
+      void this.drain();
+    });
+  }
+  startTimer() {
+    if (this.timer !== null) window.clearInterval(this.timer);
+    this.timer = window.setInterval(() => this.render(), 1e3);
+  }
+  async drain() {
+    if (this.running) return;
+    this.running = true;
+    try {
+      while (this.pending.length) {
+        const job = this.pending.shift();
+        this.active = job;
+        job.startedAt = Date.now();
+        job.statusLabel = "Preparing request";
+        this.render();
+        const report = (update) => {
+          var _a;
+          if (((_a = this.active) == null ? void 0 : _a.id) !== job.id) return;
+          if (update.label !== void 0) job.statusLabel = update.label;
+          if (update.submittedText !== void 0) job.submittedText = update.submittedText;
+          if (update.current !== void 0) job.current = update.current;
+          if (update.total !== void 0) job.total = update.total;
+          this.render();
+        };
+        try {
+          const value = await job.run(report);
+          const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
+          this.lastCompletion = `${job.label} completed in ${elapsed} second${elapsed === 1 ? "" : "s"}.`;
+          new import_obsidian3.Notice(`${this.appName}: ${this.lastCompletion}`, 4e3);
+          job.resolve({ status: "completed", value });
+        } catch (error) {
+          const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
+          const detail = error instanceof Error ? error.message : "Unknown error";
+          this.lastCompletion = `${job.label} failed after ${elapsed} second${elapsed === 1 ? "" : "s"}: ${detail}`;
+          new import_obsidian3.Notice(`${this.appName}: ${job.label} failed. ${detail}`, 6e3);
+          job.resolve({ status: "failed", error });
+        } finally {
+          this.active = null;
+          this.render();
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+  clearWaiting() {
+    const removed = this.pending.splice(0);
+    for (const job of removed) job.resolve({ status: "cleared" });
+    if (removed.length) {
+      this.lastCompletion = `${removed.length} waiting AI request${removed.length === 1 ? " was" : "s were"} removed.`;
+      new import_obsidian3.Notice(`${this.appName}: cleared ${removed.length} waiting AI request${removed.length === 1 ? "" : "s"}.`, 4e3);
+      this.render();
+    }
+  }
+  render() {
+    var _a;
+    if (!this.opened) return;
+    const root = this.contentEl;
+    root.empty();
+    root.createEl("h2", { text: `${this.appName} AI request queue` });
+    if (this.active) {
+      const elapsed = Math.max(0, Math.floor((Date.now() - ((_a = this.active.startedAt) != null ? _a : Date.now())) / 1e3));
+      const active = root.createDiv();
+      active.createEl("h3", { text: `Processing: ${this.active.label}` });
+      active.createEl("p", { text: `${this.active.statusLabel} \xB7 ${elapsed} second${elapsed === 1 ? "" : "s"} elapsed${this.active.current && this.active.total ? ` \xB7 ${this.active.current}/${this.active.total}` : ""}` });
+      active.createEl("p", { text: "Text sent to AI (excerpt)" });
+      const excerpt = active.createEl("pre", { text: this.active.submittedText.trim().slice(0, 320) || "Preparing the text to send\u2026" });
+      excerpt.style.whiteSpace = "pre-wrap";
+      excerpt.style.maxHeight = "12em";
+      excerpt.style.overflow = "auto";
+    } else {
+      root.createEl("p", { text: "No AI request is processing." });
+    }
+    root.createEl("h3", { text: `Waiting (${this.pending.length})` });
+    if (!this.pending.length) root.createEl("p", { text: "The waiting queue is empty." });
+    for (const [index, job] of this.pending.entries()) {
+      const item = root.createDiv();
+      item.createEl("p", { text: `${index + 1}. ${job.label}` });
+      item.createEl("pre", { text: job.submittedText.trim().slice(0, 180) || "Text will be shown when this request starts." }).style.whiteSpace = "pre-wrap";
+    }
+    if (this.lastCompletion) root.createEl("p", { text: this.lastCompletion });
+    const footer = root.createDiv();
+    new import_obsidian3.ButtonComponent(footer).setButtonText("Clear waiting requests").setWarning().setDisabled(this.pending.length === 0).onClick(() => this.clearWaiting());
+    new import_obsidian3.ButtonComponent(footer).setButtonText("Close").onClick(() => this.close());
+    root.createEl("p", { text: "Clearing removes waiting requests. The active request will finish." }).style.color = "var(--text-muted)";
+  }
+};
+
 // publish/main.ts
 var OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 var DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
@@ -417,7 +546,7 @@ function selectSlot(manifest, wantState) {
   return (_a = manifest.r.find((slot) => slot.s === fallbackState)) != null ? _a : null;
 }
 async function fetchRemoteManifest(url) {
-  const response = await (0, import_obsidian3.requestUrl)({ url, method: "GET", throw: false });
+  const response = await (0, import_obsidian4.requestUrl)({ url, method: "GET", throw: false });
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Manifest fetch failed: HTTP ${response.status}`);
   }
@@ -503,7 +632,7 @@ async function fetchConstanceEntitlements(plugin) {
   var _a;
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
   const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
-  const response = await (0, import_obsidian3.requestUrl)({
+  const response = await (0, import_obsidian4.requestUrl)({
     url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
     method: "GET",
     headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
@@ -556,12 +685,12 @@ async function retryPendingSpendEvents(plugin) {
 async function checkBillingBeforeAi(plugin, amount) {
   var _a, _b;
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-    new import_obsidian3.Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
+    new import_obsidian4.Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
     return false;
   }
   await retryPendingSpendEvents(plugin);
   if (plugin.settings.pendingSpendEvents.length > 0) {
-    new import_obsidian3.Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
+    new import_obsidian4.Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
     return false;
   }
   try {
@@ -572,13 +701,13 @@ async function checkBillingBeforeAi(plugin, amount) {
     plugin.settings.purchasedCredits = paidBalance;
     await plugin.saveSettings();
     if (freeRemaining >= amount || paidBalance >= amount) return true;
-    new import_obsidian3.Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
+    new import_obsidian4.Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
     return false;
   } catch (e) {
     if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-      new import_obsidian3.Notice("Culebra: your billing session expired. Sign in again before using AI.");
+      new import_obsidian4.Notice("Culebra: your billing session expired. Sign in again before using AI.");
     } else {
-      new import_obsidian3.Notice("Culebra: billing could not be verified. No AI request was sent.");
+      new import_obsidian4.Notice("Culebra: billing could not be verified. No AI request was sent.");
     }
     return false;
   }
@@ -596,7 +725,7 @@ var DEFAULT_SETTINGS = {
   onboardingSeen: false,
   reviewBeforeApply: false
 };
-var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
+var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -620,6 +749,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
     this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a one-action AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
     this.support.start();
     await this.loadSettings();
+    this.aiQueue = new AiRequestQueue(this.app, "Culebra");
     if (!this.settings.constanceDeviceId) {
       this.settings.constanceDeviceId = generateSecureDeviceId();
       await this.saveSettings();
@@ -644,7 +774,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian3.TFile) || file.extension !== "md") {
+        if (!(file instanceof import_obsidian4.TFile) || file.extension !== "md") {
           return;
         }
         menu.addItem((item) => {
@@ -661,6 +791,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
         void this.correctEditorText(editor);
       }
     });
+    this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
     void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
   }
@@ -677,7 +808,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
   }
   openBuyCheckout(tier) {
     if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
-      new import_obsidian3.Notice("Sign in or create a billing account in Culebra settings before buying characters.");
+      new import_obsidian4.Notice("Sign in or create a billing account in Culebra settings before buying characters.");
       return;
     }
     const priceId = CONSTANCE_PRICE_IDS[tier];
@@ -697,21 +828,21 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
           this.settings.billingAccessToken = "";
           this.settings.billingAccountLinked = false;
           await this.saveSettings();
-          new import_obsidian3.Notice("Culebra: your billing session expired. Sign in again before buying credits.");
+          new import_obsidian4.Notice("Culebra: your billing session expired. Sign in again before buying credits.");
           return;
         }
       } catch (error) {
         console.error("Culebra: authenticated checkout request failed", error);
-        new import_obsidian3.Notice("Culebra: checkout status is unknown. Refresh billing and try again.");
+        new import_obsidian4.Notice("Culebra: checkout status is unknown. Refresh billing and try again.");
         return;
       }
       const email = this.settings.billingEmail.trim();
       if (!priceId || priceId === "PENDING_PROVISIONING") {
-        new import_obsidian3.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
+        new import_obsidian4.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
         return;
       }
       if (!email || !email.includes("@")) {
-        new import_obsidian3.Notice("Enter a valid billing email in Culebra settings before using the legacy checkout fallback.");
+        new import_obsidian4.Notice("Enter a valid billing email in Culebra settings before using the legacy checkout fallback.");
         return;
       }
       const params = new URLSearchParams({ app_id: CONSTANCE_APP_ID, price_id: priceId, email, external_customer_id: this.settings.constanceDeviceId });
@@ -739,7 +870,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
   async chargeOneCredit(textLength) {
     const cost = Math.max(1, Math.ceil(textLength));
     if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
-      new import_obsidian3.Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
+      new import_obsidian4.Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
       return false;
     }
     const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
@@ -752,16 +883,16 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       this.settings.billingAccessToken = "";
       this.settings.billingAccountLinked = false;
       await this.saveSettings();
-      new import_obsidian3.Notice("Culebra: your billing session expired. Sign in again.");
+      new import_obsidian4.Notice("Culebra: your billing session expired. Sign in again.");
       return false;
     }
     if (free.kind === "error") {
-      new import_obsidian3.Notice("Culebra: the account allowance could not be verified. No correction was applied.");
+      new import_obsidian4.Notice("Culebra: the account allowance could not be verified. No correction was applied.");
       return false;
     }
     await retryPendingSpendEvents(this);
     if (this.settings.pendingSpendEvents.length > 0) {
-      new import_obsidian3.Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
+      new import_obsidian4.Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
       return false;
     }
     const stableEventId = generateEventId();
@@ -784,11 +915,11 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       this.settings.purchasedCredits = 0;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
-      new import_obsidian3.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
+      new import_obsidian4.Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
       return false;
     }
     console.warn("Culebra: credit spend is unknown; blocking until the persisted event can be reconciled.");
-    new import_obsidian3.Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
+    new import_obsidian4.Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
     return false;
   }
   /** Correct the current selection, or the whole active note when no text is selected. */
@@ -802,17 +933,17 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     if (correctedText === originalText) {
-      new import_obsidian3.Notice(`Culebra found no changes in the ${target}.`);
+      new import_obsidian4.Notice(`Culebra found no changes in the ${target}.`);
       return;
     }
     if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult()) return;
     if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new import_obsidian3.Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
+      new import_obsidian4.Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
       return;
     }
     if (!await this.chargeOneCredit(originalText.length)) return;
     if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new import_obsidian3.Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
+      new import_obsidian4.Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
       return;
     }
     if (hasSelection) {
@@ -820,7 +951,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
     } else {
       editor.setValue(correctedText);
     }
-    new import_obsidian3.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
+    new import_obsidian4.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
   }
   /** Replace a Markdown file after optional Settings-based before/after review. */
   async correctFile(file) {
@@ -830,75 +961,80 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     if (correctedText === originalText) {
-      new import_obsidian3.Notice(`Culebra found no changes in ${file.name}.`);
+      new import_obsidian4.Notice(`Culebra found no changes in ${file.name}.`);
       return;
     }
     if (await this.app.vault.read(file) !== originalText) {
-      new import_obsidian3.Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
+      new import_obsidian4.Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
       return;
     }
     if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult()) return;
     if (!await this.chargeOneCredit(originalText.length)) return;
     if (await this.app.vault.read(file) !== originalText) {
-      new import_obsidian3.Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
+      new import_obsidian4.Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
       return;
     }
     await this.app.vault.modify(file, correctedText);
-    new import_obsidian3.Notice(`Culebra corrected ${file.name}.`);
+    new import_obsidian4.Notice(`Culebra corrected ${file.name}.`);
   }
   /** Ask the configured provider for corrected text without mutating the vault. */
   async correctText(originalText, targetLabel) {
     if (!originalText.trim()) {
-      new import_obsidian3.Notice("Culebra found no text to correct.");
+      new import_obsidian4.Notice("Culebra found no text to correct.");
       return null;
     }
-    const cost = Math.max(1, Math.ceil(originalText.length));
-    if (!await checkBillingBeforeAi(this, cost)) return null;
-    let apiKey;
-    try {
-      apiKey = await this.resolveApiKey();
-    } catch (error) {
-      console.error("Culebra: failed to resolve an OpenRouter API key", error);
-      new import_obsidian3.Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
-      return null;
-    }
-    new import_obsidian3.Notice(`Culebra is correcting ${targetLabel}...`);
-    try {
-      const response = await (0, import_obsidian3.requestUrl)({
-        url: OPENROUTER_CHAT_COMPLETIONS_URL,
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: this.settings.model.trim() || DEFAULT_MODEL,
-          messages: [
-            { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
-            { role: "user", content: originalText }
-          ]
-        }),
-        throw: false
-      });
-      if (response.status < 200 || response.status >= 300) {
-        console.error("Culebra AI Spell Correct failed", response.status, response.text);
-        new import_obsidian3.Notice("Culebra correction failed. Check the developer console.");
+    const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report) => {
+      report({ label: "Checking billing eligibility", submittedText: originalText });
+      const cost = Math.max(1, Math.ceil(originalText.length));
+      if (!await checkBillingBeforeAi(this, cost)) return null;
+      let apiKey;
+      try {
+        report({ label: "Resolving OpenRouter connection", submittedText: originalText });
+        apiKey = await this.resolveApiKey();
+      } catch (error) {
+        console.error("Culebra: failed to resolve an OpenRouter API key", error);
+        new import_obsidian4.Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
         return null;
       }
-      const correctedText = extractResponseText(response.json);
-      if (!correctedText.trim()) {
-        new import_obsidian3.Notice("Culebra received an empty response; no changes made.");
+      try {
+        report({ label: "Sending text to OpenRouter", submittedText: originalText });
+        const response = await (0, import_obsidian4.requestUrl)({
+          url: OPENROUTER_CHAT_COMPLETIONS_URL,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: this.settings.model.trim() || DEFAULT_MODEL,
+            messages: [
+              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+              { role: "user", content: originalText }
+            ]
+          }),
+          throw: false
+        });
+        if (response.status < 200 || response.status >= 300) {
+          console.error("Culebra AI Spell Correct failed", response.status, response.text);
+          new import_obsidian4.Notice("Culebra correction failed. Check the developer console.");
+          return null;
+        }
+        const correctedText = extractResponseText(response.json);
+        if (!correctedText.trim()) {
+          new import_obsidian4.Notice("Culebra received an empty response; no changes made.");
+          return null;
+        }
+        return correctedText;
+      } catch (error) {
+        console.error("Culebra AI Spell Correct failed", error);
+        new import_obsidian4.Notice("Culebra correction failed. Check the developer console.");
         return null;
       }
-      return correctedText;
-    } catch (error) {
-      console.error("Culebra AI Spell Correct failed", error);
-      new import_obsidian3.Notice("Culebra correction failed. Check the developer console.");
-      return null;
-    }
+    });
+    return queued.status === "completed" ? queued.value : null;
   }
 };
-var CorrectionReviewModal = class extends import_obsidian3.Modal {
+var CorrectionReviewModal = class extends import_obsidian4.Modal {
   constructor(app, target, before, after) {
     super(app);
     this.target = target;
@@ -949,7 +1085,7 @@ function extractResponseText(responseJson) {
   const content = (_c = (_b = (_a = response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
   return typeof content === "string" ? content : "";
 }
-var CulebraSettingTab = class extends import_obsidian3.PluginSettingTab {
+var CulebraSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.creditsSummaryEl = null;
@@ -963,20 +1099,21 @@ var CulebraSettingTab = class extends import_obsidian3.PluginSettingTab {
     containerEl.createEl("p", {
       text: "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo."
     });
-    new import_obsidian3.Setting(containerEl).setName("Review before applying").setDesc("Off by default for one-click corrections. Turn on to see a before/after review for each correction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+    new import_obsidian4.Setting(containerEl).setName("Review before applying").setDesc("Off by default for one-click corrections. Turn on to see a before/after review for each correction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
       this.plugin.settings.reviewBeforeApply = value;
       await this.plugin.saveSettings();
     }));
     containerEl.createEl("p", {
       text: "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted."
     });
-    new import_obsidian3.Setting(containerEl).setName("Model").setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`).addText(
+    new import_obsidian4.Setting(containerEl).setName("AI request queue").setDesc("View the active correction, elapsed time and text excerpt, or remove waiting corrections.").addButton((button) => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
+    new import_obsidian4.Setting(containerEl).setName("Model").setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`).addText(
       (text) => text.setPlaceholder(DEFAULT_MODEL).setValue(this.plugin.settings.model).onChange(async (value) => {
         this.plugin.settings.model = value.trim() || DEFAULT_MODEL;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("OpenRouter API key (optional)").setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.").addText(
+    new import_obsidian4.Setting(containerEl).setName("OpenRouter API key (optional)").setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.").addText(
       (text) => text.setPlaceholder("sk-or-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
         await this.plugin.saveSettings();
@@ -993,7 +1130,7 @@ var CulebraSettingTab = class extends import_obsidian3.PluginSettingTab {
     this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
     this.renderCreditsSummary();
     addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
-    new import_obsidian3.Setting(containerEl).setName("Buy credits").setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.").addButton(
+    new import_obsidian4.Setting(containerEl).setName("Buy credits").setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.").addButton(
       (button) => button.setButtonText("Buy $1 (20,000 characters)").onClick(() => {
         this.plugin.openBuyCheckout("usd_001");
       })
@@ -1006,7 +1143,7 @@ var CulebraSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.plugin.openBuyCheckout("usd_015");
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Refresh balance").setDesc("Pull the latest purchased-credit balance from Constance.").addButton(
+    new import_obsidian4.Setting(containerEl).setName("Refresh balance").setDesc("Pull the latest purchased-credit balance from Constance.").addButton(
       (button) => button.setButtonText("Refresh balance").onClick(async () => {
         button.setDisabled(true);
         button.setButtonText("Refreshing...");

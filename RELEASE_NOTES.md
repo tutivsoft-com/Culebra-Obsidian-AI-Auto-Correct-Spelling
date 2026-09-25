@@ -1,8 +1,8 @@
 # Release Notes
 
-## 4.4.25 - 2026-09-25
+## 4.4.27 - 2026-09-25
 
-- Updated release metadata and current documentation version references. Plugin behavior is unchanged.
+- Added a live correction queue with submitted-text excerpts, elapsed time, completion status, and a control to clear waiting corrections.
 
 ## Previous release — 4.4.18
 
@@ -140,7 +140,7 @@ Verification completed:
 - `npm run test:vault-plugin`
 
 <!-- one-click-workflow:start -->
-## Workflow defaults (v4.4.24)
+## oorkflow defaults (v4.4.24)
 
 Culebra applies spelling corrections directly by default. Correction behavior is configured in Settings; before-and-after review is optional and off by default.
 <!-- one-click-workflow:end -->

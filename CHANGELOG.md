@@ -1,8 +1,9 @@
 # Changelog
 
-## 4.4.25 (2026-09-25)
+## 4.4.27 (2026-09-25)
 
-- Synchronized the release version across release metadata and current product documentation; plugin behavior is unchanged.
+- Show each correction's submitted text excerpt and elapsed time in a live queue, then report when it completes.
+- Serialize overlapping corrections and let users clear waiting corrections while the active request finishes.
 
 ## 4.4.24 (2026-09-24)
 
