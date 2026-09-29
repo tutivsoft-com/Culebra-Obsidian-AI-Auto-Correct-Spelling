@@ -3,7 +3,7 @@
 Correct spelling, grammar, punctuation, capitalization, and obvious typing
 mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: 4.4.31
+Version: 4.4.37
 
 ## Features
 
@@ -47,3 +47,9 @@ Diagnostic events remain in memory until the plugin reloads, up to 1,000 events.
 ## License
 
 This plugin is licensed under the MIT License. See LICENSE.
+
+## Account, billing, and credit feedback
+
+Account and billing controls appear at the top of settings. Register with an email and password, confirm the link sent by email, then return and sign in. The settings page shows the current balance and provides balance refresh, sign-out, and purchase controls. Metered actions show the available balance and report the amount used with the remaining balance when the action completes.
+
+Current version: 4.4.37.
