@@ -8,7 +8,7 @@ import {
   Setting,
   TFile,
 } from "obsidian";
-import { addBillingAccountSettings, claimAccountFreeUsage, createAuthenticatedCheckout, pollAuthenticatedCheckout, spendAccountCredits } from "./constance-account";
+import { addBillingAccountSettings, claimAccountFreeUsage, clearBillingSession, createAuthenticatedCheckout, pollAuthenticatedCheckout, requestAuthenticatedBilling, spendAccountCredits } from "./constance-account";
 import { PluginSupport } from "./plugin-support";
 import { AiRequestQueue } from "./ai-request-queue";
 
@@ -212,15 +212,13 @@ function generateEventId(): string {
 async function fetchConstanceEntitlements(plugin: CulebraSpellCorrectPlugin): Promise<any> {
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
   const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
-  const response = await requestUrl({
+  const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
     url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
     method: "GET",
-    headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false,
   });
   if (response.status === 401 || response.status === 403 || response.status === 404) {
-    plugin.settings.billingAccessToken = "";
-    plugin.settings.billingAccountLinked = false;
+    clearBillingSession(plugin.settings);
     await plugin.saveSettings();
   }
   if (response.status < 200 || response.status >= 300) {
@@ -235,10 +233,9 @@ type SpendResult =
   | { kind: "error" };
 
 async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: number, stableEventId: string): Promise<SpendResult> {
-  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
+  const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
   if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
-  plugin.settings.billingAccessToken = "";
-  plugin.settings.billingAccountLinked = false;
+  clearBillingSession(plugin.settings);
   await plugin.saveSettings();
   return { kind: "error" };
 }
@@ -305,6 +302,8 @@ interface CulebraSettings {
   constanceDeviceId: string;
   billingEmail: string;
   billingAccessToken: string;
+  billingRefreshToken: string;
+  billingAccessExpiresAt: number;
   billingAccountLinked: boolean;
   // Local mirror of the account-scoped free allowance returned by Constance.
   // It is never authoritative and starts at zero so reinstalling cannot
@@ -326,6 +325,8 @@ const DEFAULT_SETTINGS: CulebraSettings = {
   constanceDeviceId: "",
   billingEmail: "",
   billingAccessToken: "",
+  billingRefreshToken: "",
+  billingAccessExpiresAt: 0,
   billingAccountLinked: false,
   freeCredits: 0,
   purchasedCredits: 0,
@@ -373,6 +374,8 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0)
       : [];
     this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
+    this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
+    this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
     this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
     await this.saveSettings();
 
@@ -442,7 +445,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
 
   openBuyCheckout(tier: keyof typeof CONSTANCE_PRICE_IDS) {
     if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) { new Notice("Sign in or create a billing account in Culebra settings before buying characters."); return; }
-    const priceId = CONSTANCE_PRICE_IDS[tier];
     void (async () => {
       try {
         const result = await createAuthenticatedCheckout(
@@ -456,8 +458,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
           return;
         }
         if (result.kind === "auth-required") {
-          this.settings.billingAccessToken = "";
-          this.settings.billingAccountLinked = false;
+          clearBillingSession(this.settings);
           await this.saveSettings();
           new Notice("Culebra: your billing session expired. Sign in again before buying credits.");
           return;
@@ -470,20 +471,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
         return;
       }
 
-      const email = this.settings.billingEmail.trim();
-      if (!priceId || priceId === "PENDING_PROVISIONING") {
-        new Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
-        return;
-      }
-      if (!email || !email.includes("@")) {
-        new Notice("Enter a valid billing email in Culebra settings before using the legacy checkout fallback.");
-        return;
-      }
-      const params = new URLSearchParams({ app_id: CONSTANCE_APP_ID, price_id: priceId, email, external_customer_id: this.settings.constanceDeviceId });
-      // This plugin's manifest sets isDesktopOnly: false, so it must not
-      // assume an Electron-only API like shell.openExternal is available.
-      window.open(`${CONSTANCE_BASE_URL}/buy?${params.toString()}`, "_blank");
-      this.pollAfterCheckout();
+      new Notice("Culebra: authenticated checkout is temporarily unavailable. Try again after refreshing billing.");
     })();
   }
 
@@ -513,13 +501,13 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
       return false;
     }
-    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
+    const free = await claimAccountFreeUsage(this.settings, () => this.saveSettings(), CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
     if (free.kind === "ok") {
       this.settings.freeCredits = free.remaining;
       await this.saveSettings();
       return true;
     }
-    if (free.kind === "auth-required") { this.settings.billingAccessToken = ""; this.settings.billingAccountLinked = false; await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
+    if (free.kind === "auth-required") { clearBillingSession(this.settings); await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
     if (free.kind === "error") { new Notice("Culebra: the account allowance could not be verified. No correction was applied."); return false; }
 
     await retryPendingSpendEvents(this);

@@ -3,7 +3,9 @@
 Correct spelling, grammar, punctuation, capitalization, and obvious typing
 mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: 4.4.37
+Version: 4.4.39
+
+Billing sessions now rotate Constance refresh tokens automatically. Sign out revokes the session, and **Forgot password?** in plugin settings opens the central recovery page. Authenticated checkout no longer falls back to an email-only purchase.
 
 ## Features
 

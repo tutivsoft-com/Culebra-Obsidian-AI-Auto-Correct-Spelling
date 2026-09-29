@@ -36,7 +36,7 @@ function errorDetail(response, fallback) {
   return String(((_a = response.json) == null ? void 0 : _a.detail) || ((_b = response.json) == null ? void 0 : _b.message) || response.text || fallback);
 }
 async function authenticate(mode, email, password, installationId) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   const body = mode === "register" ? { email, password, external_customer_id: installationId } : { email, password };
   const response = await (0, import_obsidian.requestUrl)({
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
@@ -48,9 +48,10 @@ async function authenticate(mode, email, password, installationId) {
   if (response.status < 200 || response.status >= 300) {
     throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
   }
-  const token = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
-  if (token) return { accessToken: token };
-  if (((_b = response.json) == null ? void 0 : _b.verification_required) === true) return { verificationRequired: true };
+  if (((_a = response.json) == null ? void 0 : _a.verification_required) === true) return { verificationRequired: true };
+  const token = String(((_b = response.json) == null ? void 0 : _b.access_token) || "");
+  const refreshToken = String(((_c = response.json) == null ? void 0 : _c.refresh_token) || "");
+  if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number((_d = response.json) == null ? void 0 : _d.expires_in) || 900 };
   throw new Error("Constance did not return an account token.");
 }
 async function linkInstallation(adapter, token) {
@@ -78,32 +79,91 @@ async function signInBillingAccount(adapter, password, mode) {
   if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
   const result = await authenticate(mode, email, password, adapter.installationId);
   if (!result.accessToken) {
+    clearBillingSession(adapter.state);
     adapter.state.billingEmail = email;
     adapter.state.billingAccountLinked = false;
     adapter.state.billingRegistrationPending = true;
     await adapter.persist();
     throw new Error("Registered but not logged in. Check your email, click the confirmation link, then sign in here.");
   }
-  await completeBillingSignIn(adapter, email, result.accessToken);
+  await completeBillingSignIn(adapter, email, result);
 }
-async function completeBillingSignIn(adapter, email, token) {
-  await linkInstallation(adapter, token);
+async function completeBillingSignIn(adapter, email, session) {
+  if (!session.accessToken || !session.refreshToken) throw new Error("Constance did not return a complete account session.");
+  await linkInstallation(adapter, session.accessToken);
   adapter.state.billingEmail = email;
-  adapter.state.billingAccessToken = token;
+  adapter.state.billingAccessToken = session.accessToken;
+  adapter.state.billingRefreshToken = session.refreshToken;
+  adapter.state.billingAccessExpiresAt = Date.now() + (session.expiresIn || 900) * 1e3;
   adapter.state.billingAccountLinked = true;
   adapter.state.billingRegistrationPending = false;
   await adapter.persist();
   await adapter.syncBalance();
 }
+function clearBillingSession(state) {
+  state.billingAccessToken = "";
+  state.billingRefreshToken = "";
+  state.billingAccessExpiresAt = 0;
+  state.billingAccountLinked = false;
+}
+var refreshInFlight = null;
+async function refreshBillingSession(state, persist) {
+  if (!state.billingRefreshToken) return false;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    var _a, _b, _c;
+    let response;
+    try {
+      response = await (0, import_obsidian.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: state.billingRefreshToken }), throw: false });
+    } catch (e) {
+      return false;
+    }
+    if (response.status === 401 || response.status === 403) {
+      clearBillingSession(state);
+      await persist();
+      return false;
+    }
+    if (response.status < 200 || response.status >= 300) return false;
+    const access = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
+    const refresh = String(((_b = response.json) == null ? void 0 : _b.refresh_token) || "");
+    if (!access || !refresh) {
+      clearBillingSession(state);
+      await persist();
+      return false;
+    }
+    state.billingAccessToken = access;
+    state.billingRefreshToken = refresh;
+    state.billingAccessExpiresAt = Date.now() + (Number((_c = response.json) == null ? void 0 : _c.expires_in) || 900) * 1e3;
+    await persist();
+    return true;
+  })();
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
+}
+async function requestAuthenticatedBilling(state, persist, options) {
+  if (state.billingRefreshToken && (!state.billingAccessToken || Date.now() >= state.billingAccessExpiresAt - 6e4)) {
+    if (!await refreshBillingSession(state, persist) && state.billingRefreshToken) return { status: 503 };
+  }
+  const send = () => (0, import_obsidian.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
+  if (!state.billingAccessToken) return { status: 401 };
+  let response = await send();
+  if (response.status === 401 && state.billingRefreshToken) {
+    if (await refreshBillingSession(state, persist)) response = await send();
+    else if (state.billingRefreshToken) return { status: 503 };
+  }
+  return response;
+}
 async function createAuthenticatedCheckout(adapter, planCode, idempotencyKey) {
   var _a;
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return { kind: "auth-required" };
-  const response = await (0, import_obsidian.requestUrl)({
+  const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkout`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${adapter.state.billingAccessToken}`,
       "Idempotency-Key": idempotencyKey
     },
     body: JSON.stringify({
@@ -124,22 +184,21 @@ async function createAuthenticatedCheckout(adapter, planCode, idempotencyKey) {
 async function pollAuthenticatedCheckout(adapter, checkoutId) {
   var _a, _b;
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
-  const response = await (0, import_obsidian.requestUrl)({
+  const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
     method: "GET",
-    headers: { Authorization: `Bearer ${adapter.state.billingAccessToken}` },
     throw: false
   });
   return response.status >= 200 && response.status < 300 && ((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.settled) === true;
 }
-async function claimAccountFreeUsage(state, appId, installationId, eventId, amount) {
+async function claimAccountFreeUsage(state, persist, appId, installationId, eventId, amount) {
   var _a, _b;
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await (0, import_obsidian.requestUrl)({
+    const response = await requestAuthenticatedBilling(state, persist, {
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
       throw: false
     });
@@ -155,14 +214,14 @@ async function claimAccountFreeUsage(state, appId, installationId, eventId, amou
     return { kind: "error" };
   }
 }
-async function spendAccountCredits(state, appId, installationId, eventId, amount) {
+async function spendAccountCredits(state, persist, appId, installationId, eventId, amount) {
   var _a, _b, _c;
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await (0, import_obsidian.requestUrl)({
+    const response = await requestAuthenticatedBilling(state, persist, {
       url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.billingAccessToken}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
       throw: false
     });
@@ -191,7 +250,7 @@ function addBillingAccountSettings(containerEl, adapter) {
     cls: "constance-account-status",
     text: numericBalances.length ? `${accountStatus} Balance \u2014 ${numericBalances.join("; ")}` : accountStatus
   });
-  new import_obsidian.Setting(section).setName("Email").setDesc("Used to register, sign in, restore purchases, and open checkout.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).onChange(async (value) => {
+  new import_obsidian.Setting(section).setName("Email").setDesc("Used to register, sign in, restore purchases, and open checkout.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
     adapter.state.billingEmail = value.trim();
     await adapter.persist();
   }));
@@ -228,13 +287,16 @@ function addBillingAccountSettings(containerEl, adapter) {
     }
   })).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
     var _a;
-    adapter.state.billingAccessToken = "";
-    adapter.state.billingAccountLinked = false;
+    const refreshToken = adapter.state.billingRefreshToken;
+    clearBillingSession(adapter.state);
     state.billingRegistrationPending = false;
     await adapter.persist();
+    if (refreshToken) void (0, import_obsidian.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false }).catch(() => {
+    });
     new import_obsidian.Notice("Signed out.");
     (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
   }));
+  new import_obsidian.Setting(section).setName("Forgot password?").setDesc("Reset your billing account password on Constance.").addButton((button) => button.setButtonText("Open reset page").onClick(() => window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank")));
   const firstHeading = containerEl.querySelector(":scope > h1, :scope > h2");
   if (firstHeading == null ? void 0 : firstHeading.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
   else containerEl.prepend(section);
@@ -727,14 +789,6 @@ Hard rules:
 - Return only the corrected text. Do not wrap it in code fences. Do not add commentary.`;
 var CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 var CONSTANCE_APP_ID = "culebra-ai-spell-correct";
-var CONSTANCE_PRICE_IDS = {
-  usd_001: "pri_01m0b7grv1cmt42gqfpc0v835k",
-  // $1  -> 20,000 characters
-  usd_005: "pri_01m0b7gsghrh315zvfxnxx4w38",
-  // $5  -> 160,000 characters
-  usd_015: "pri_01m0b7gt2jyj6s2a6dpkdvfdsr"
-  // $15 -> 640,000 characters
-};
 var CONSTANCE_PLAN_CODES = {
   usd_001: "standard",
   usd_005: "pro",
@@ -754,15 +808,13 @@ async function fetchConstanceEntitlements(plugin) {
   var _a;
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
   const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
-  const response = await (0, import_obsidian4.requestUrl)({
+  const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
     url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
     method: "GET",
-    headers: { Authorization: `Bearer ${plugin.settings.billingAccessToken}` },
     throw: false
   });
   if (response.status === 401 || response.status === 403 || response.status === 404) {
-    plugin.settings.billingAccessToken = "";
-    plugin.settings.billingAccountLinked = false;
+    clearBillingSession(plugin.settings);
     await plugin.saveSettings();
   }
   if (response.status < 200 || response.status >= 300) {
@@ -771,10 +823,9 @@ async function fetchConstanceEntitlements(plugin) {
   return (_a = response.json) == null ? void 0 : _a.data;
 }
 async function spendConstanceCredits(plugin, amount, stableEventId) {
-  const result = await spendAccountCredits(plugin.settings, CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
+  const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
   if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
-  plugin.settings.billingAccessToken = "";
-  plugin.settings.billingAccountLinked = false;
+  clearBillingSession(plugin.settings);
   await plugin.saveSettings();
   return { kind: "error" };
 }
@@ -840,6 +891,8 @@ var DEFAULT_SETTINGS = {
   constanceDeviceId: "",
   billingEmail: "",
   billingAccessToken: "",
+  billingRefreshToken: "",
+  billingAccessExpiresAt: 0,
   billingAccountLinked: false,
   freeCredits: 0,
   purchasedCredits: 0,
@@ -878,6 +931,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
     }
     this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents) ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0) : [];
     this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
+    this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
+    this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
     this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
     await this.saveSettings();
     if (!this.settings.onboardingSeen) {
@@ -931,7 +986,6 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
       new import_obsidian4.Notice("Sign in or create a billing account in Culebra settings before buying characters.");
       return;
     }
-    const priceId = CONSTANCE_PRICE_IDS[tier];
     void (async () => {
       try {
         const result = await createAuthenticatedCheckout(
@@ -945,8 +999,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
           return;
         }
         if (result.kind === "auth-required") {
-          this.settings.billingAccessToken = "";
-          this.settings.billingAccountLinked = false;
+          clearBillingSession(this.settings);
           await this.saveSettings();
           new import_obsidian4.Notice("Culebra: your billing session expired. Sign in again before buying credits.");
           return;
@@ -956,18 +1009,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
         new import_obsidian4.Notice("Culebra: checkout status is unknown. Refresh billing and try again.");
         return;
       }
-      const email = this.settings.billingEmail.trim();
-      if (!priceId || priceId === "PENDING_PROVISIONING") {
-        new import_obsidian4.Notice("Culebra billing is not available yet because Paddle prices are still being provisioned.");
-        return;
-      }
-      if (!email || !email.includes("@")) {
-        new import_obsidian4.Notice("Enter a valid billing email in Culebra settings before using the legacy checkout fallback.");
-        return;
-      }
-      const params = new URLSearchParams({ app_id: CONSTANCE_APP_ID, price_id: priceId, email, external_customer_id: this.settings.constanceDeviceId });
-      window.open(`${CONSTANCE_BASE_URL}/buy?${params.toString()}`, "_blank");
-      this.pollAfterCheckout();
+      new import_obsidian4.Notice("Culebra: authenticated checkout is temporarily unavailable. Try again after refreshing billing.");
     })();
   }
   pollAfterCheckout(checkoutId) {
@@ -993,15 +1035,14 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian4.Plugin {
       new import_obsidian4.Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
       return false;
     }
-    const free = await claimAccountFreeUsage(this.settings, CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
+    const free = await claimAccountFreeUsage(this.settings, () => this.saveSettings(), CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
     if (free.kind === "ok") {
       this.settings.freeCredits = free.remaining;
       await this.saveSettings();
       return true;
     }
     if (free.kind === "auth-required") {
-      this.settings.billingAccessToken = "";
-      this.settings.billingAccountLinked = false;
+      clearBillingSession(this.settings);
       await this.saveSettings();
       new import_obsidian4.Notice("Culebra: your billing session expired. Sign in again.");
       return false;
