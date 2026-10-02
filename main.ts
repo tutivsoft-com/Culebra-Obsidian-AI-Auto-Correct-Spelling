@@ -1,3 +1,6 @@
+import { resumeAccountCheckout } from "./billing-checkout";
+import { refreshBillingSession } from "./constance-account";
+import { addLivePacks } from "./billing-catalog";
 import {
   Editor,
   Modal,
@@ -20,8 +23,7 @@ const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
 // instead of requiring the user to paste one. Same algorithm as the C# reference
 // (desktop-app-Windows-Kest-LLM-Chat-AI/.../RemoteOpenAiKeyManifest.cs) and the
 // verified Python port (tool-python-openrouter-manifest-crypto): AES-256-GCM +
-// PBKDF2-HMAC-SHA256, 210,000 iterations. The manual "OpenRouter API key" setting
-// remains as a user override that takes priority when set.
+// PBKDF2-HMAC-SHA256, 210,000 iterations. Only the managed key is used.
 const REMOTE_MANIFEST_PASSPHRASE = "Kivu.RemoteKeyManifest.v1.2026D";
 const REMOTE_MANIFEST_URL =
   "https://raw.githubusercontent.com/tutivsoft-com/Resources/main/tool-app-Culebra-Obsidian-AI-Auto-Correct-Spelling.txt";
@@ -186,17 +188,6 @@ Hard rules:
 // preferred catalog-code checkout; /buy is retained only as a fallback.
 const CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 const CONSTANCE_APP_ID = "culebra-ai-spell-correct";
-const CONSTANCE_PRICE_IDS: Record<"usd_001" | "usd_005" | "usd_015", string> = {
-  usd_001: "pri_01m0b7grv1cmt42gqfpc0v835k", // $1  -> 20,000 characters
-  usd_005: "pri_01m0b7gsghrh315zvfxnxx4w38", // $5  -> 160,000 characters
-  usd_015: "pri_01m0b7gt2jyj6s2a6dpkdvfdsr", // $15 -> 640,000 characters
-};
-const CONSTANCE_PLAN_CODES: Record<keyof typeof CONSTANCE_PRICE_IDS, string> = {
-  usd_001: "standard",
-  usd_005: "pro",
-  usd_015: "ultimate",
-};
-
 function generateSecureDeviceId(): string {
   const bytes = new Uint8Array(16);
   window.crypto.getRandomValues(bytes);
@@ -240,16 +231,23 @@ async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: 
   return { kind: "error" };
 }
 
-async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlugin): Promise<void> {
+async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlugin, manual = false): Promise<void> {
+  resumeAccountCheckout({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId,
+    persist: () => plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(plugin), refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) });
+
   if (!plugin.settings.constanceDeviceId) {
     return;
   }
   try {
     const entitlement = await fetchConstanceEntitlements(plugin);
     const serverBalance = entitlement?.credits?.balance;
+    if (!Number.isFinite(serverBalance)) throw new Error("Billing returned an invalid balance");
+    plugin.settings.freeCredits = Math.max(0, Number(entitlement?.free_usage?.remaining) || 0);
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
     await plugin.saveSettings();
+    plugin.refreshBillingCredits?.();
   } catch (error) {
+    if (manual) throw error;
     console.error("Culebra: Constance entitlement sync failed", error);
   }
 }
@@ -257,6 +255,14 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
 async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promise<void> {
   const pending = [...(plugin.settings.pendingSpendEvents ?? [])];
   for (const event of pending) {
+    if (event.kind === "free") {
+      const result = await claimAccountFreeUsage(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, event.eventId, event.amount);
+      if (result.kind === "error" || result.kind === "auth-required") break;
+      plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
+      if (result.kind === "ok") plugin.settings.freeCredits = result.remaining;
+      await plugin.saveSettings();
+      continue;
+    }
     const result = await spendConstanceCredits(plugin, event.amount, event.eventId);
     if (result.kind === "error") break;
     plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
@@ -297,6 +303,7 @@ async function checkBillingBeforeAi(plugin: CulebraSpellCorrectPlugin, amount: n
 }
 
 interface CulebraSettings {
+  settingsMode: "simple" | "advanced";
   model: string;
   apiKey: string;
   constanceDeviceId: string;
@@ -312,14 +319,15 @@ interface CulebraSettings {
   // Local mirror of the real Constance CreditBalance, refreshed through the
   // authenticated account entitlement endpoint.
   purchasedCredits: number;
-  // Events are written before a paid correction starts. Unknown transport
+  // Free and paid events are written before their billing request. Unknown transport
   // outcomes stay here and are retried with the same event ID after restart.
-  pendingSpendEvents: Array<{ eventId: string; amount: number }>;
+  pendingSpendEvents: Array<{ eventId: string; amount: number; kind?: "free" | "paid" }>;
   onboardingSeen: boolean;
   reviewBeforeApply: boolean;
 }
 
 const DEFAULT_SETTINGS: CulebraSettings = {
+  settingsMode: "simple",
   model: DEFAULT_MODEL,
   apiKey: "",
   constanceDeviceId: "",
@@ -340,6 +348,7 @@ const DEFAULT_SETTINGS: CulebraSettings = {
  * available from settings and is off by default.
  */
 export default class CulebraSpellCorrectPlugin extends Plugin {
+  refreshBillingCredits?: () => void;
   support!: PluginSupport;
   settings: CulebraSettings = DEFAULT_SETTINGS;
   aiQueue!: AiRequestQueue;
@@ -348,10 +357,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   private remoteApiKeyCache: string | null = null;
 
   private async resolveApiKey(): Promise<string> {
-    const manualKey = this.settings.apiKey.trim();
-    if (manualKey) {
-      return manualKey;
-    }
     if (this.remoteApiKeyCache) {
       return this.remoteApiKeyCache;
     }
@@ -430,6 +435,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   async loadSettings() {
     const savedSettings = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    this.settings.settingsMode = this.settings.settingsMode === "advanced" ? "advanced" : "simple";
     // Free usage is account-scoped; never trust a legacy local counter.
     this.settings.freeCredits = 0;
     // Existing installs predate the onboarding flag; do not show a first-run
@@ -441,38 +447,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
-  }
-
-  openBuyCheckout(tier: keyof typeof CONSTANCE_PRICE_IDS) {
-    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) { new Notice("Sign in or create a billing account in Culebra settings before buying characters."); return; }
-    void (async () => {
-      try {
-        const result = await createAuthenticatedCheckout(
-          { state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, appVersion: this.manifest.version, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) },
-          CONSTANCE_PLAN_CODES[tier],
-          `checkout_${generateEventId()}`,
-        );
-        if (result.kind === "ok") {
-          window.open(result.checkoutUrl, "_blank");
-          this.pollAfterCheckout(result.checkoutId);
-          return;
-        }
-        if (result.kind === "auth-required") {
-          clearBillingSession(this.settings);
-          await this.saveSettings();
-          new Notice("Culebra: your billing session expired. Sign in again before buying credits.");
-          return;
-        }
-      } catch (error) {
-        // A transport failure can leave an authenticated checkout in an
-        // unknown state; do not create a second purchase through /buy.
-        console.error("Culebra: authenticated checkout request failed", error);
-        new Notice("Culebra: checkout status is unknown. Refresh billing and try again.");
-        return;
-      }
-
-      new Notice("Culebra: authenticated checkout is temporarily unavailable. Try again after refreshing billing.");
-    })();
   }
 
   private pollAfterCheckout(checkoutId?: string) {
@@ -490,7 +464,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   }
 
    /**
-   * Reserves the character-based cost only after the user approves a preview.
+   * Charges the character-based cost after a valid correction is accepted.
    * The local free-character pool is used first, followed by the Constance
     * balance; any unverified balance or spend blocks the edit until the
     * server gives an authoritative result.
@@ -501,7 +475,19 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
       return false;
     }
-    const free = await claimAccountFreeUsage(this.settings, () => this.saveSettings(), CONSTANCE_APP_ID, this.settings.constanceDeviceId, `free_${generateEventId()}`, cost);
+    await retryPendingSpendEvents(this);
+    if (this.settings.pendingSpendEvents.length > 0) {
+      new Notice("Culebra: a previous billing operation is still being reconciled. No correction was applied.");
+      return false;
+    }
+    const freeEventId = `free_${generateEventId()}`;
+    this.settings.pendingSpendEvents.push({ eventId: freeEventId, amount: cost, kind: "free" });
+    await this.saveSettings();
+    const free = await claimAccountFreeUsage(this.settings, () => this.saveSettings(), CONSTANCE_APP_ID, this.settings.constanceDeviceId, freeEventId, cost);
+    if (free.kind === "ok" || free.kind === "insufficient") {
+      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== freeEventId);
+      await this.saveSettings();
+    }
     if (free.kind === "ok") {
       this.settings.freeCredits = free.remaining;
       await this.saveSettings();
@@ -535,7 +521,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       this.settings.purchasedCredits = 0;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
-      new Notice("Culebra: out of characters. Buy more in plugin settings (Buy $1 / $5 / $15).");
+      new Notice("Culebra: out of characters. Review current one-time offers in plugin settings.");
       return false;
     }
 
@@ -723,10 +709,16 @@ class CulebraSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    this.plugin.support.addDiagnosticsSetting(containerEl);
+
 
     containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
 
+    new Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday controls. Advanced adds customization and troubleshooting.")
+      .addDropdown(dropdown => dropdown.addOption("simple", "Simple").addOption("advanced", "Advanced")
+        .setValue(this.plugin.settings.settingsMode).onChange(async value => {
+          this.plugin.settings.settingsMode = value === "advanced" ? "advanced" : "simple";
+          await this.plugin.saveSettings(); this.display();
+        }));
     containerEl.createEl("h3", { text: "Getting started" });
     containerEl.createEl("p", {
       text:
@@ -741,36 +733,16 @@ class CulebraSettingTab extends PluginSettingTab {
       text:
         "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted.",
     });
-    new Setting(containerEl)
-      .setName("AI request queue")
-      .setDesc("View the active correction, elapsed time and text excerpt, or remove waiting corrections.")
-      .addButton((button) => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
-
-    new Setting(containerEl)
-      .setName("Model")
-      .setDesc(`OpenRouter model id. Default: ${DEFAULT_MODEL}`)
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULT_MODEL)
-          .setValue(this.plugin.settings.model)
-          .onChange(async (value) => {
-            this.plugin.settings.model = value.trim() || DEFAULT_MODEL;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("OpenRouter API key (optional)")
-      .setDesc("Culebra fetches its own built-in key automatically. Only set this to override it with your own OpenRouter key.")
-      .addText((text) =>
-        text.setPlaceholder("sk-or-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
-          this.plugin.settings.apiKey = value.trim();
-          await this.plugin.saveSettings();
-        }),
-      );
-    const apiKeyInput = containerEl.querySelector<HTMLInputElement>("input[placeholder='sk-or-...']");
-    if (apiKeyInput) {
-      apiKeyInput.type = "password";
+    if (this.plugin.settings.settingsMode === "advanced") {
+      new Setting(containerEl).setName("AI model").setDesc("The managed default is recommended for routine proofreading. Changing models can change wording and response time.")
+        .addDropdown(dropdown => {
+          dropdown.addOption(DEFAULT_MODEL, "Recommended (managed default)").addOption("openai/gpt-5-mini", "GPT-5 Mini");
+          if (![DEFAULT_MODEL, "openai/gpt-5-mini"].includes(this.plugin.settings.model)) dropdown.addOption(this.plugin.settings.model, "Previously selected model");
+          dropdown.setValue(this.plugin.settings.model).onChange(async value => { this.plugin.settings.model = value; await this.plugin.saveSettings(); });
+        });
+      new Setting(containerEl).setName("AI request queue").setDesc("Inspect progress or remove waiting corrections; the active request continues.")
+        .addButton(button => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
+      this.plugin.support.addDiagnosticsSetting(containerEl);
     }
 
     containerEl.createEl("h3", { text: "Credits & billing" });
@@ -780,28 +752,12 @@ class CulebraSettingTab extends PluginSettingTab {
     });
 
     this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
+    this.plugin.refreshBillingCredits = () => this.renderCreditsSummary();
     this.renderCreditsSummary();
 
     addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
 
-    new Setting(containerEl)
-      .setName("Buy credits")
-      .setDesc("Opens TutivSoft billing (Constance) in your browser to complete payment via Paddle.")
-      .addButton((button) =>
-        button.setButtonText("Buy $1 (20,000 characters)").onClick(() => {
-          this.plugin.openBuyCheckout("usd_001");
-        }),
-      )
-      .addButton((button) =>
-        button.setButtonText("Buy $5 (160,000 characters)").onClick(() => {
-          this.plugin.openBuyCheckout("usd_005");
-        }),
-      )
-      .addButton((button) =>
-        button.setButtonText("Buy $15 (640,000 characters)").onClick(() => {
-          this.plugin.openBuyCheckout("usd_015");
-        }),
-      );
+    addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
 
     new Setting(containerEl)
       .setName("Refresh balance")
@@ -810,16 +766,15 @@ class CulebraSettingTab extends PluginSettingTab {
         button.setButtonText("Refresh balance").onClick(async () => {
           button.setDisabled(true);
           button.setButtonText("Refreshing...");
-          await syncPurchasedCreditsFromConstance(this.plugin);
-          this.renderCreditsSummary();
-          button.setDisabled(false);
-          button.setButtonText("Refresh balance");
+          try { await syncPurchasedCreditsFromConstance(this.plugin, true); this.renderCreditsSummary(); }
+          catch { new Notice("Could not refresh balance. Please try again."); }
+          finally { button.setDisabled(false); button.setButtonText("Refresh balance"); }
         }),
       );
 
     // Sync on open so the summary reflects a purchase made since last time
     // Obsidian was open, without requiring a manual refresh click.
-    void syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary());
+    void syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary()).catch(() => {});
   }
 
   private renderCreditsSummary() {

@@ -3,7 +3,7 @@
 Correct spelling, grammar, punctuation, capitalization, and obvious typing
 mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: 4.4.39
+Version: 4.4.46
 
 Billing sessions now rotate Constance refresh tokens automatically. Sign out revokes the session, and **Forgot password?** in plugin settings opens the central recovery page. Authenticated checkout no longer falls back to an email-only purchase.
 
@@ -31,10 +31,10 @@ Use Show AI request queue in the command palette or settings to see the current 
 Culebra uses network access for AI correction and optional credit management:
 
 - Text you explicitly choose to correct is sent to the OpenRouter chat completions API at https://openrouter.ai/api/v1/chat/completions and forwarded to the model selected in plugin settings. Do not submit confidential text unless you are comfortable sending it to these services.
-- Your OpenRouter API key takes precedence and is stored in local plugin data. When no personal key is set, Culebra uses its capped built-in key. The key is sent only to OpenRouter for authorization.
+- Culebra uses its managed OpenRouter connection. Personal API keys are not accepted.
 - Culebra contacts TutivSoft Constance at https://app.tutivsoft.com for account linking, entitlement reads, free-usage claims, and purchased-credit spends. It sends the plugin ID, a random installation device ID, and credit transaction data.
 - Before sending selected note text to OpenRouter, Culebra checks available usage. It claims or spends usage only after the correction is accepted for applying.
-- Purchases are optional. The initial 2,000 account-scoped characters can be used without a purchase.
+- Purchases are optional. The current account balance and available credit offers are shown in plugin settings.
 
 Culebra has no client-side telemetry, advertising, self-updating, dependency installation, or access to files outside the current Obsidian vault. It does not collect or transmit note content except when you explicitly invoke correction.
 
@@ -54,4 +54,4 @@ This plugin is licensed under the MIT License. See LICENSE.
 
 Account and billing controls appear at the top of settings. Register with an email and password, confirm the link sent by email, then return and sign in. The settings page shows the current balance and provides balance refresh, sign-out, and purchase controls. Metered actions show the available balance and report the amount used with the remaining balance when the action completes.
 
-Current version: 4.4.37.
+Current version: 4.4.46.
