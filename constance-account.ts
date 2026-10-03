@@ -46,11 +46,36 @@ export type AuthenticatedCheckoutResult =
   | { kind: "fallback" }
   | { kind: "auth-required" };
 
+class ConstanceAccountError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ConstanceAccountError";
+    this.status = status;
+  }
+}
+
 function errorDetail(response: { json?: any; text?: string }, fallback: string): string {
-  const detail = response.json?.detail;
-  if (detail?.code === "invalid_credentials") return "Incorrect password. Use Forgot password? to reset it.";
-  if (detail?.code === "email_verification_required") return "Email not verified. Click the link in your email, then Connect again.";
-  return String(detail?.message || (typeof detail === "string" ? detail : "") || response.json?.message || fallback);
+  const payload = response.json?.data || response.json;
+  const detail = payload?.detail;
+  const code = detail?.code || payload?.code;
+  if (code === "invalid_credentials") return "The email or password is incorrect. Use Forgot password? to reset it.";
+  if (code === "email_verification_required") return "Email not verified. Click the link in your email, then Connect again.";
+  return String(detail?.message || (typeof detail === "string" ? detail : "") || payload?.message || fallback);
+}
+
+async function linkAuthenticatedInstallation(adapter: ConstanceAccountAdapter, token: string): Promise<void> {
+  try {
+    await linkInstallation(adapter, token);
+  } catch (error) {
+    if (error instanceof ConstanceAccountError && error.status === 401) {
+      adapter.state.billingAccessToken = "";
+      adapter.state.billingRefreshToken = "";
+      adapter.state.billingAccountLinked = false;
+      await adapter.persist();
+    }
+    throw error;
+  }
 }
 
 async function authenticate(
@@ -70,7 +95,7 @@ async function authenticate(
     throw: false,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`));
+    throw new ConstanceAccountError(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`), response.status);
   }
   if (response.json?.verification_required === true) return { verificationRequired: true };
   const token = String(response.json?.access_token || "");
@@ -94,7 +119,7 @@ async function linkInstallation(adapter: ConstanceAccountAdapter, token: string)
     throw: false,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(errorDetail(response, `Installation link failed (HTTP ${response.status})`));
+    throw new ConstanceAccountError(errorDetail(response, `Installation link failed (HTTP ${response.status})`), response.status);
   }
 }
 
@@ -125,13 +150,15 @@ export async function signInBillingAccount(
 
 async function completeBillingSignIn(adapter: ConstanceAccountAdapter, email: string, session: AuthenticationResult): Promise<void> {
   if (!session.accessToken || !session.refreshToken) throw new Error("Constance did not return a complete account session.");
-  await linkInstallation(adapter, session.accessToken);
   adapter.state.billingEmail = email;
   adapter.state.billingAccessToken = session.accessToken;
   adapter.state.billingRefreshToken = session.refreshToken;
   adapter.state.billingAccessExpiresAt = Date.now() + (session.expiresIn || 900) * 1000;
-  adapter.state.billingAccountLinked = true;
+  adapter.state.billingAccountLinked = false;
   adapter.state.billingRegistrationPending = false;
+  await adapter.persist();
+  await linkAuthenticatedInstallation(adapter, session.accessToken);
+  adapter.state.billingAccountLinked = true;
   await adapter.persist();
   await adapter.syncBalance();
 }
@@ -147,7 +174,7 @@ export async function verifyBillingAccount(adapter: ConstanceAccountAdapter, ver
     throw: false,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(errorDetail(response, `Billing account verification failed (HTTP ${response.status})`));
+    throw new ConstanceAccountError(errorDetail(response, `Billing account verification failed (HTTP ${response.status})`), response.status);
   }
   const accessToken = String(response.json?.access_token || "");
   if (!accessToken) throw new Error("Constance did not return an account token after verification.");

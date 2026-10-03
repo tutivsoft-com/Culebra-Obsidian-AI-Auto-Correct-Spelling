@@ -3,9 +3,9 @@
 Correct spelling, grammar, punctuation, capitalization, and obvious typing
 mistakes in Obsidian notes while preserving your meaning and Markdown structure.
 
-Version: 4.4.46
+Version: 4.4.47
 
-Billing sessions now rotate Constance refresh tokens automatically. Sign out revokes the session, and **Forgot password?** in plugin settings opens the central recovery page. Authenticated checkout no longer falls back to an email-only purchase.
+Recoverable installation-link failures preserve the verified account session; a rejected installation token clears the saved session and prompts the user to sign in again.
 
 ## Features
 
@@ -54,4 +54,4 @@ This plugin is licensed under the MIT License. See LICENSE.
 
 Account and billing controls appear at the top of settings. Register with an email and password, confirm the link sent by email, then return and sign in. The settings page shows the current balance and provides balance refresh, sign-out, and purchase controls. Metered actions show the available balance and report the amount used with the remaining balance when the action completes.
 
-Current version: 4.4.46.
+Current version: 4.4.47.
