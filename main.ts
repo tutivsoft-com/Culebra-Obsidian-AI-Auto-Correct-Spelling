@@ -1,3 +1,5 @@
+import { consumeAccountUnits } from "./account-credit-client";
+import { showAccountWelcome } from "./constance-account";
 import { resumeAccountCheckout } from "./billing-checkout";
 import { refreshBillingSession } from "./constance-account";
 import { addLivePacks } from "./billing-catalog";
@@ -16,7 +18,7 @@ import { PluginSupport } from "./plugin-support";
 import { AiRequestQueue } from "./ai-request-queue";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest";
+const DEFAULT_MODEL = "~openai/gpt-luna-latest";
 
 // --- Pattern B remote key manifest (TutivSoft.OpenAiKeyManifest port) ---
 // Fetches this app's own encrypted OpenRouter key from a GitHub-hosted manifest
@@ -224,6 +226,14 @@ type SpendResult =
   | { kind: "error" };
 
 async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: number, stableEventId: string): Promise<SpendResult> {
+  if (stableEventId.startsWith("consume_")) {
+    const result = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
+    if (result.kind === "ok") {
+      plugin.settings.freeCredits = result.freeRemaining ?? plugin.settings.freeCredits;
+      return { kind: "ok", balance: result.balance ?? plugin.settings.purchasedCredits };
+    }
+    return { kind: result.kind === "insufficient" ? "insufficient" : "error" };
+  }
   const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
   if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
   clearBillingSession(plugin.settings);
@@ -240,7 +250,7 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
   }
   try {
     const entitlement = await fetchConstanceEntitlements(plugin);
-    const serverBalance = entitlement?.credits?.balance;
+    const serverBalance = (entitlement?.credits?.total_available ?? entitlement?.credits?.balance);
     if (!Number.isFinite(serverBalance)) throw new Error("Billing returned an invalid balance");
     plugin.settings.freeCredits = Math.max(0, Number(entitlement?.free_usage?.remaining) || 0);
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
@@ -285,11 +295,11 @@ async function checkBillingBeforeAi(plugin: CulebraSpellCorrectPlugin, amount: n
   try {
     const entitlement = await fetchConstanceEntitlements(plugin);
     const freeRemaining = Math.max(0, Number(entitlement?.free_usage?.remaining) || 0);
-    const paidBalance = Math.max(0, Number(entitlement?.credits?.balance) || 0);
+    const paidBalance = Math.max(0, Number((entitlement?.credits?.total_available ?? entitlement?.credits?.balance)) || 0);
     plugin.settings.freeCredits = freeRemaining;
     plugin.settings.purchasedCredits = paidBalance;
     await plugin.saveSettings();
-    if (freeRemaining >= amount || paidBalance >= amount) return true;
+    if (freeRemaining + paidBalance >= amount) return true;
     new Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
     return false;
   } catch {
@@ -370,6 +380,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     this.support.start();
     await this.loadSettings();
     this.aiQueue = new AiRequestQueue(this.app, "Culebra");
+    await showAccountWelcome(this, this.settings, () => this.saveSettings());
 
     if (!this.settings.constanceDeviceId) {
       this.settings.constanceDeviceId = generateSecureDeviceId();
@@ -480,28 +491,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       new Notice("Culebra: a previous billing operation is still being reconciled. No correction was applied.");
       return false;
     }
-    const freeEventId = `free_${generateEventId()}`;
-    this.settings.pendingSpendEvents.push({ eventId: freeEventId, amount: cost, kind: "free" });
-    await this.saveSettings();
-    const free = await claimAccountFreeUsage(this.settings, () => this.saveSettings(), CONSTANCE_APP_ID, this.settings.constanceDeviceId, freeEventId, cost);
-    if (free.kind === "ok" || free.kind === "insufficient") {
-      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== freeEventId);
-      await this.saveSettings();
-    }
-    if (free.kind === "ok") {
-      this.settings.freeCredits = free.remaining;
-      await this.saveSettings();
-      return true;
-    }
-    if (free.kind === "auth-required") { clearBillingSession(this.settings); await this.saveSettings(); new Notice("Culebra: your billing session expired. Sign in again."); return false; }
-    if (free.kind === "error") { new Notice("Culebra: the account allowance could not be verified. No correction was applied."); return false; }
-
-    await retryPendingSpendEvents(this);
-    if (this.settings.pendingSpendEvents.length > 0) {
-      new Notice("Culebra: a previous credit spend is still being reconciled. Please retry after the connection is restored.");
-      return false;
-    }
-    const stableEventId = generateEventId();
+    const stableEventId = `consume_${generateEventId()}`;
     this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
     try {
       await this.saveSettings();
@@ -518,7 +508,6 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
       return true;
     }
     if (result.kind === "insufficient") {
-      this.settings.purchasedCredits = 0;
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
       new Notice("Culebra: out of characters. Review current one-time offers in plugin settings.");
@@ -628,7 +617,7 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: this.settings.model.trim() || DEFAULT_MODEL,
+            model: DEFAULT_MODEL,
             messages: [
               { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
               { role: "user", content: originalText },
