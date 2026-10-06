@@ -1,3 +1,5 @@
+import { applySettingsLayout } from "./settings-layout";
+import { diagnostics } from "./diagnostics";
 import { renderAccountGuidance } from "./account-guidance";
 import { resumeAccountCheckout } from "./billing-checkout";
 import { Notice, Setting, requestUrl, RequestUrlParam } from "obsidian";
@@ -66,9 +68,13 @@ function errorDetail(response: { json?: any; text?: string }, fallback: string):
 }
 
 async function linkAuthenticatedInstallation(adapter: ConstanceAccountAdapter, token: string): Promise<void> {
+const diagnosticEnd1 = diagnostics?.start?.("constance-account.linkAuthenticatedInstallation") ?? (() => {});
+try {
+
   try {
     await linkInstallation(adapter, token);
   } catch (error) {
+diagnostics.failure("constance-account.caught_1", error);
     if (error instanceof ConstanceAccountError && error.status === 401) {
       adapter.state.billingAccessToken = "";
       adapter.state.billingRefreshToken = "";
@@ -77,6 +83,8 @@ async function linkAuthenticatedInstallation(adapter: ConstanceAccountAdapter, t
     }
     throw error;
   }
+
+} catch (diagnosticError1) { diagnostics?.failure?.("constance-account.linkAuthenticatedInstallation", diagnosticError1); throw diagnosticError1; } finally { diagnosticEnd1(); }
 }
 
 async function authenticate(
@@ -85,28 +93,42 @@ async function authenticate(
   password: string,
   installationId: string,
 ): Promise<AuthenticationResult> {
+const diagnosticEnd2 = diagnostics?.start?.("constance-account.authenticate") ?? (() => {});
+try {
+
   const body = mode !== "login"
     ? { email, password, external_customer_id: installationId }
     : { email, password };
-  const response = await requestUrl({
+  const response = await (diagnostics?.request?.("network.constance-account.authenticate", requestUrl, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     throw: false,
-  });
+  }) ?? requestUrl({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    throw: false,
+  }));
   if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`), response.status);
+    throw new ConstanceAccountError(errorDetail(response, `Could not connect your account. Check your connection and try again.`), response.status);
   }
   if (response.json?.verification_required === true) return { verificationRequired: true };
   const token = String(response.json?.access_token || "");
   const refreshToken = String(response.json?.refresh_token || "");
   if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number(response.json?.expires_in) || 900 };
-  throw new Error("Constance did not return an account token.");
+  throw new Error("Could not sign in. Try connecting again.");
+
+} catch (diagnosticError2) { diagnostics?.failure?.("constance-account.authenticate", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 }
 
 async function linkInstallation(adapter: ConstanceAccountAdapter, token: string): Promise<void> {
-  const response = await requestUrl({
+const diagnosticEnd3 = diagnostics?.start?.("constance-account.linkInstallation") ?? (() => {});
+try {
+
+  const response = await (diagnostics?.request?.("network.constance-account.linkInstallation", requestUrl, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -118,10 +140,24 @@ async function linkInstallation(adapter: ConstanceAccountAdapter, token: string)
       app_version: adapter.appVersion || undefined,
     }),
     throw: false,
-  });
+  }) ?? requestUrl({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      app_id: adapter.appId,
+      installation_id: adapter.installationId,
+      legacy_external_customer_id: adapter.installationId,
+      platform: "obsidian",
+      app_version: adapter.appVersion || undefined,
+    }),
+    throw: false,
+  }));
   if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Installation link failed (HTTP ${response.status})`), response.status);
+    throw new ConstanceAccountError(errorDetail(response, `Could not connect this installation to your account. Try connecting again.`), response.status);
   }
+
+} catch (diagnosticError3) { diagnostics?.failure?.("constance-account.linkInstallation", diagnosticError3); throw diagnosticError3; } finally { diagnosticEnd3(); }
 }
 
 export async function signInBillingAccount(
@@ -129,14 +165,17 @@ export async function signInBillingAccount(
   password: string,
   mode: "login" | "register" | "connect",
 ): Promise<void> {
+const diagnosticEnd4 = diagnostics?.start?.("constance-account.signInBillingAccount") ?? (() => {});
+try {
+
   const email = adapter.state.billingEmail.trim().toLowerCase();
   const journalState = adapter.state as ConstanceAccountState & Record<string, any>;
   const owner = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
-  if (owner && owner !== email) throw new Error(`An unfinished billing request belongs to ${owner}. Connect that account to recover it first.`);
+  if (owner && owner !== email) throw new Error(`A pending action belongs to ${owner}. Connect that account to resume it first.`);
 
-  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
+  if (!email || !email.includes("@")) throw new Error("Enter a valid email address.");
   if (Array.from(password).length < 8 || Array.from(password).length > 128) throw new Error("Password must be between 8 and 128 characters.");
-  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
+  if (!adapter.installationId) throw new Error("The plugin is still starting. Try again shortly.");
   const result = await authenticate(mode, email, password, adapter.installationId);
   if (!result.accessToken) {
     clearBillingSession(adapter.state);
@@ -147,10 +186,15 @@ export async function signInBillingAccount(
     throw new Error("Registered but not logged in. Check your email, click the confirmation link, then sign in here.");
   }
   await completeBillingSignIn(adapter, email, result);
+
+} catch (diagnosticError4) { diagnostics?.failure?.("constance-account.signInBillingAccount", diagnosticError4); throw diagnosticError4; } finally { diagnosticEnd4(); }
 }
 
 async function completeBillingSignIn(adapter: ConstanceAccountAdapter, email: string, session: AuthenticationResult): Promise<void> {
-  if (!session.accessToken || !session.refreshToken) throw new Error("Constance did not return a complete account session.");
+const diagnosticEnd5 = diagnostics?.start?.("constance-account.completeBillingSignIn") ?? (() => {});
+try {
+
+  if (!session.accessToken || !session.refreshToken) throw new Error("Could not complete sign-in. Try connecting again.");
   adapter.state.billingEmail = email;
   adapter.state.billingAccessToken = session.accessToken;
   adapter.state.billingRefreshToken = session.refreshToken;
@@ -162,24 +206,37 @@ async function completeBillingSignIn(adapter: ConstanceAccountAdapter, email: st
   adapter.state.billingAccountLinked = true;
   await adapter.persist();
   await adapter.syncBalance();
+
+} catch (diagnosticError5) { diagnostics?.failure?.("constance-account.completeBillingSignIn", diagnosticError5); throw diagnosticError5; } finally { diagnosticEnd5(); }
 }
 
 export async function verifyBillingAccount(adapter: ConstanceAccountAdapter, verificationToken: string): Promise<void> {
+const diagnosticEnd6 = diagnostics?.start?.("constance-account.verifyBillingAccount") ?? (() => {});
+try {
+
   const token = verificationToken.trim();
-  if (!token) throw new Error("Enter the verification token from your billing email.");
-  const response = await requestUrl({
+  if (!token) throw new Error("Enter the verification code from your email.");
+  const response = await (diagnostics?.request?.("network.constance-account.verifyBillingAccount", requestUrl, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/register/verify`,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
     throw: false,
-  });
+  }) ?? requestUrl({
+    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/register/verify`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    throw: false,
+  }));
   if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Billing account verification failed (HTTP ${response.status})`), response.status);
+    throw new ConstanceAccountError(errorDetail(response, `Your account could not be verified. Try connecting again.`), response.status);
   }
   const accessToken = String(response.json?.access_token || "");
-  if (!accessToken) throw new Error("Constance did not return an account token after verification.");
+  if (!accessToken) throw new Error("Your email was verified, but sign-in could not be completed. Connect again.");
   await completeBillingSignIn(adapter, adapter.state.billingEmail.trim().toLowerCase(), { accessToken, refreshToken: String(response.json?.refresh_token || ""), expiresIn: Number(response.json?.expires_in) || 900 });
+
+} catch (diagnosticError6) { diagnostics?.failure?.("constance-account.verifyBillingAccount", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
 }
 
 export function clearBillingSession(state: ConstanceAccountState): void {
@@ -191,14 +248,21 @@ export function clearBillingSession(state: ConstanceAccountState): void {
 
 let refreshInFlight: Promise<boolean> | null = null;
 export async function refreshBillingSession(state: ConstanceAccountState, persist: () => Promise<void>): Promise<boolean> {
+const diagnosticEnd7 = diagnostics?.start?.("constance-account.refreshBillingSession") ?? (() => {});
+try {
+
   if (!state.billingRefreshToken) return false;
-  if (refreshInFlight) return refreshInFlight;
+  if (refreshInFlight) return await (refreshInFlight);
   const originalToken = state.billingRefreshToken;
   refreshInFlight = (async () => {
+const diagnosticEnd8 = diagnostics?.start?.("constance-account.background.8317") ?? (() => {});
+try {
+
     let response;
     try {
-      response = await requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false });
-    } catch { return false; }
+      response = await (diagnostics?.request?.("network.constance-account.refreshBillingSession", requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }) ?? requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }));
+    } catch (caughtError2) {
+diagnostics.failure("constance-account.caught_3", caughtError2); return false; }
     if (state.billingRefreshToken !== originalToken) return false;
     if (response.status === 401 || response.status === 403) { clearBillingSession(state); await persist(); return false; }
     if (response.status < 200 || response.status >= 300) return false;
@@ -210,22 +274,31 @@ export async function refreshBillingSession(state: ConstanceAccountState, persis
     state.billingAccessExpiresAt = Date.now() + (Number(response.json?.expires_in) || 900) * 1000;
     await persist();
     return true;
-  })();
+
+} catch (diagnosticError8) { diagnostics?.failure?.("constance-account.background.8317", diagnosticError8); throw diagnosticError8; } finally { diagnosticEnd8(); }
+})();
   try { return await refreshInFlight; } finally { refreshInFlight = null; }
+
+} catch (diagnosticError7) { diagnostics?.failure?.("constance-account.refreshBillingSession", diagnosticError7); throw diagnosticError7; } finally { diagnosticEnd7(); }
 }
 
 export async function requestAuthenticatedBilling(state: ConstanceAccountState, persist: () => Promise<void>, options: RequestUrlParam): Promise<any> {
+const diagnosticEnd9 = diagnostics?.start?.("constance-account.requestAuthenticatedBilling") ?? (() => {});
+try {
+
   if (state.billingRefreshToken && (!state.billingAccessToken || Date.now() >= state.billingAccessExpiresAt - 60_000)) {
     if (!await refreshBillingSession(state, persist) && state.billingRefreshToken) return { status: 503 };
   }
-  const send = () => requestUrl({ ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
+  const send = () => (diagnostics?.request?.("network.constance-account.requestAuthenticatedBilling", requestUrl, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${state.billingAccessToken}` }, throw: false }) ?? requestUrl({ ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${state.billingAccessToken}` }, throw: false }));
   if (!state.billingAccessToken) return { status: 401 };
   let response = await send();
   if (response.status === 401 && state.billingRefreshToken) {
     if (await refreshBillingSession(state, persist)) response = await send();
     else if (state.billingRefreshToken) return { status: 503 };
   }
-  return response;
+  return await (response);
+
+} catch (diagnosticError9) { diagnostics?.failure?.("constance-account.requestAuthenticatedBilling", diagnosticError9); throw diagnosticError9; } finally { diagnosticEnd9(); }
 }
 
 export async function createAuthenticatedCheckout(
@@ -233,6 +306,9 @@ export async function createAuthenticatedCheckout(
   planCode: string,
   idempotencyKey: string,
 ): Promise<AuthenticatedCheckoutResult> {
+const diagnosticEnd10 = diagnostics?.start?.("constance-account.createAuthenticatedCheckout") ?? (() => {});
+try {
+
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return { kind: "auth-required" };
   const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkout`,
@@ -257,19 +333,29 @@ export async function createAuthenticatedCheckout(
   return checkoutUrl
     ? { kind: "ok", checkoutUrl, checkoutId: data?.checkout_id ? String(data.checkout_id) : undefined }
     : { kind: "fallback" };
+
+} catch (diagnosticError10) { diagnostics?.failure?.("constance-account.createAuthenticatedCheckout", diagnosticError10); throw diagnosticError10; } finally { diagnosticEnd10(); }
 }
 
 export async function pollAuthenticatedCheckout(adapter: ConstanceAccountAdapter, checkoutId: string): Promise<boolean> {
+const diagnosticEnd11 = diagnostics?.start?.("constance-account.pollAuthenticatedCheckout") ?? (() => {});
+try {
+
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
   const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
     url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
     method: "GET",
     throw: false,
   });
-  return response.status >= 200 && response.status < 300 && response.json?.data?.settled === true;
+  return await (response.status >= 200 && response.status < 300 && response.json?.data?.settled === true);
+
+} catch (diagnosticError11) { diagnostics?.failure?.("constance-account.pollAuthenticatedCheckout", diagnosticError11); throw diagnosticError11; } finally { diagnosticEnd11(); }
 }
 
 export async function validateBillingSession(adapter: ConstanceAccountAdapter): Promise<boolean> {
+const diagnosticEnd12 = diagnostics?.start?.("constance-account.validateBillingSession") ?? (() => {});
+try {
+
   resumeAccountCheckout({ ...adapter, refreshSession: () => refreshBillingSession(adapter.state, adapter.persist) });
 
   const token = adapter.state.billingAccessToken;
@@ -285,7 +371,9 @@ export async function validateBillingSession(adapter: ConstanceAccountAdapter): 
     await adapter.persist();
     return false;
   }
-  return response.status >= 200 && response.status < 300;
+  return await (response.status >= 200 && response.status < 300);
+
+} catch (diagnosticError12) { diagnostics?.failure?.("constance-account.validateBillingSession", diagnosticError12); throw diagnosticError12; } finally { diagnosticEnd12(); }
 }
 
 export async function claimAccountFreeUsage(
@@ -296,6 +384,9 @@ export async function claimAccountFreeUsage(
   eventId: string,
   amount: number,
 ): Promise<FreeUsageResult> {
+const diagnosticEnd13 = diagnostics?.start?.("constance-account.claimAccountFreeUsage") ?? (() => {});
+try {
+
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
     const response = await requestAuthenticatedBilling(state, persist, {
@@ -313,9 +404,12 @@ export async function claimAccountFreeUsage(
     new Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} free credits.`);
     return { kind: "ok", remaining };
   } catch (error) {
-    console.error("Constance account free-usage claim failed", error);
+diagnostics.failure("constance-account.caught_extra_1", error);
+    diagnostics?.legacy?.("error", "constance-account.constance_account_free_usage_claim_failed");
     return { kind: "error" };
   }
+
+} catch (diagnosticError13) { diagnostics?.failure?.("constance-account.claimAccountFreeUsage", diagnosticError13); throw diagnosticError13; } finally { diagnosticEnd13(); }
 }
 
 /** Spend paid credits only after Constance verifies the signed-in account owns this installation. */
@@ -327,6 +421,9 @@ export async function spendAccountCredits(
   eventId: string,
   amount: number,
 ): Promise<AccountSpendResult> {
+const diagnosticEnd14 = diagnostics?.start?.("constance-account.spendAccountCredits") ?? (() => {});
+try {
+
   if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
     const response = await requestAuthenticatedBilling(state, persist, {
@@ -346,9 +443,12 @@ export async function spendAccountCredits(
     new Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} purchased credits.`);
     return { kind: "ok", balance: remaining };
   } catch (error) {
-    console.error("Constance authenticated credit spend failed", error);
+diagnostics.failure("constance-account.caught_extra_2", error);
+    diagnostics?.legacy?.("error", "constance-account.constance_authenticated_credit_spend_failed");
     return { kind: "error" };
   }
+
+} catch (diagnosticError14) { diagnostics?.failure?.("constance-account.spendAccountCredits", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); }
 }
 
 export function addBillingAccountSettings(containerEl: HTMLElement, adapter: ConstanceAccountAdapter): void {
@@ -362,7 +462,7 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
   const state = adapter.state as ConstanceAccountState & Record<string, unknown>;
   const numericBalances = Object.entries(state)
     .filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number")
-    .map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}: ${Number(value).toLocaleString()}`);
+    .map(([key, value]) => `${key.replace(/^cached/i, "").replace(/^free/i, "Free ").replace(/^purchased/i, "Purchased ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").trim().toLowerCase()}: ${Number(value).toLocaleString()}`);
   const accountStatus = adapter.state.billingAccountLinked
     ? `Signed in as ${adapter.state.billingEmail || "your account"}`
     : state.billingRegistrationPending
@@ -376,28 +476,47 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
   if (!adapter.state.billingAccountLinked) {
   new Setting(section)
     .setName("Email")
-    .setDesc("Used to register, sign in, restore purchases, and open checkout.")
+    .setDesc("Use the email associated with your account and purchases.")
     .addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
+return diagnostics.guard("constance-account.control_4", async () => {
+const diagnosticEnd15 = diagnostics?.start?.("control.email.onChange") ?? (() => {});
+try {
+
       const journalState = adapter.state as ConstanceAccountState & Record<string, any>;
       const hasPending = Object.entries(journalState).some(([key, value]) => /^pending/i.test(key) && key !== "pendingBillingOwnerEmail" && !!value && (Array.isArray(value) ? value.length > 0 : typeof value === "object" ? Object.keys(value).length > 0 : true));
       if (hasPending && !journalState.pendingBillingOwnerEmail) journalState.pendingBillingOwnerEmail = adapter.state.billingEmail;
       if (!hasPending) journalState.pendingBillingOwnerEmail = undefined;
       adapter.state.billingEmail = value.trim();
       await adapter.persist();
-    }));
+
+} catch (diagnosticError15) { diagnostics?.failure?.("control.email.onChange", diagnosticError15); throw diagnosticError15; } finally { diagnosticEnd15(); }
+
+});
+}));
   new Setting(section)
     .setName("Password")
-    .setDesc("Used only for this request. The plugin never saves your password.")
+    .setDesc("Your password is used to sign in and is not saved by the plugin.")
     .addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.maxLength = 256;
-      text.setPlaceholder("8 to 128 characters").onChange((value) => { password = value; });
+      text.setPlaceholder("8 to 128 characters").onChange((value) => {
+return diagnostics.guard("constance-account.control_5", () => {
+const diagnosticAction16 = () => {
+ password = value;
+}; return diagnostics?.run ? diagnostics.run("control.19062.onChange", diagnosticAction16) : diagnosticAction16();
+
+});
+});
     });
   }
   new Setting(section)
     .setName("Account")
     .setDesc(accountStatus)
     .addButton((button) => { if (adapter.state.billingAccountLinked) { button.buttonEl.remove(); return; } button.setButtonText("Connect").setDisabled(adapter.state.billingAccountLinked).onClick(async () => {
+return diagnostics.guard("constance-account.control_6", async () => {
+const diagnosticEnd17 = diagnostics?.start?.("control.connect.onClick") ?? (() => {});
+try {
+
       button.setDisabled(true);
       try {
         await signInBillingAccount(adapter, password, "connect");
@@ -405,22 +524,39 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
         new Notice(adapter.state.billingRegistrationPending ? "Check your email and follow the verification link, then Connect again." : `Connected as ${adapter.state.billingEmail}.`);
         adapter.refresh?.();
       } catch (error) {
+diagnostics.failure("constance-account.caught_7", error);
         new Notice(error instanceof Error ? error.message : "Connection failed. Please try again.");
         adapter.refresh?.();
       } finally { button.setDisabled(adapter.state.billingAccountLinked); }
-    }); })
+
+} catch (diagnosticError17) { diagnostics?.failure?.("control.connect.onClick", diagnosticError17); throw diagnosticError17; } finally { diagnosticEnd17(); }
+
+});
+}); })
     .addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
+return diagnostics.guard("constance-account.control_8", async () => {
+const diagnosticEnd18 = diagnostics?.start?.("control.account.onClick") ?? (() => {});
+try {
+
       const refreshToken = adapter.state.billingRefreshToken;
       clearBillingSession(adapter.state);
       state.billingRegistrationPending = false;
       await adapter.persist();
-      if (refreshToken) void requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false }).catch(() => {});
+      if (refreshToken) void diagnostics.guard("constance-account.background_9", () => ((diagnostics?.request?.("network.constance-account.addBillingAccountSettings", requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false }) ?? requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })).catch((rejectedError1) => {
+diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
       new Notice("Signed out.");
       adapter.refresh?.();
-    }));
 
-  if (!adapter.state.billingAccountLinked) new Setting(section).setName("Forgot password?").setDesc("Reset your billing account password on Constance.")
-    .addButton((button) => button.setButtonText("Open reset page").onClick(() => window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank")));
+} catch (diagnosticError18) { diagnostics?.failure?.("control.account.onClick", diagnosticError18); throw diagnosticError18; } finally { diagnosticEnd18(); }
+
+});
+}));
+
+  if (!adapter.state.billingAccountLinked) new Setting(section).setName("Forgot password?").setDesc("Reset your account password in your browser.")
+    .addButton((button) => button.setButtonText("Open reset page").onClick(() => {
+return diagnostics.guard("constance-account.control_10", () => { const diagnosticAction19 = () => (window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank")); return diagnostics?.run ? diagnostics.run("control.forgot_password_.onClick", diagnosticAction19) : diagnosticAction19();
+});
+}));
 
   const firstHeading = containerEl.querySelector(":scope > h1, :scope > h2");
   if (firstHeading?.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
@@ -435,27 +571,20 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
       if (!section.contains(summary)) section.appendChild(summary);
     }
   });
+  queueMicrotask(() => applySettingsLayout(containerEl, adapter.appId));
 }
 
 /** A single welcome with an actionable setup link; account guidance stays in settings until connected. */
 export async function showAccountWelcome(plugin: import("obsidian").Plugin, state: ConstanceAccountState, persist: () => Promise<void>): Promise<void> {
+const diagnosticEnd20 = diagnostics?.start?.("constance-account.showAccountWelcome") ?? (() => {});
+try {
+
   const openSetup = (): void => {
     const settings = (plugin.app as unknown as { setting: { open(): void; openTabById(id: string): void } }).setting;
     settings.open(); settings.openTabById(plugin.manifest.id);
   };
   plugin.addCommand({ id: "open-account-setup", name: "Get started: connect your account", callback: openSetup });
-  const saved = state as ConstanceAccountState & { accountWelcomeSeen?: boolean };
-  if (state.billingAccountLinked || saved.accountWelcomeSeen) return;
-  saved.accountWelcomeSeen = true;
-  await persist();
-  plugin.app.workspace.onLayoutReady(() => {
-    if (state.billingAccountLinked) return;
-    const fragment = document.createDocumentFragment();
-    fragment.append("Culebra" + ": create an account or sign in, then connect to check your free allowance (default: 2,000 AI characters once per account). ");
-    const button = document.createElement("button");
-    button.textContent = "Open account setup";
-    button.addEventListener("click", openSetup);
-    fragment.append(button);
-    new Notice(fragment, 12000);
-  });
+  // PluginSupport owns the single first-use welcome and persists through the host.
+
+} catch (diagnosticError20) { diagnostics?.failure?.("constance-account.showAccountWelcome", diagnosticError20); throw diagnosticError20; } finally { diagnosticEnd20(); }
 }

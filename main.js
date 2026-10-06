@@ -27,94 +27,456 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 
-// publish/account-credit-client.ts
+// publish/selection-scope.ts
 var import_obsidian = require("obsidian");
+function selectedFiles(entries, accepts) {
+  const files = /* @__PURE__ */ new Map();
+  const folders = /* @__PURE__ */ new Set();
+  const visit = (entry) => {
+    if (entry instanceof import_obsidian.TFile) {
+      if (accepts(entry) && !files.has(entry.path)) files.set(entry.path, entry);
+    } else if (entry instanceof import_obsidian.TFolder && !folders.has(entry.path)) {
+      folders.add(entry.path);
+      for (const child of [...entry.children]) visit(child);
+    }
+  };
+  for (const entry of entries) visit(entry);
+  return [...files.values()];
+}
+var markdownFile = (file) => file.extension.toLowerCase() === "md";
+function registerSelectionAction(plugin, config) {
+  const add = (menu, entries) => {
+    const files = selectedFiles(entries, config.accepts);
+    if (!files.length) return;
+    menu.addItem((item) => item.setTitle(`${config.name} (${files.length} file${files.length === 1 ? "" : "s"})`).setIcon(config.icon).onClick(async () => {
+      try {
+        await config.run(files);
+      } catch (e) {
+        new import_obsidian.Notice(`${config.name}: operation failed. Check the status and try again.`);
+      }
+    }));
+  };
+  if (config.folders) plugin.registerEvent(plugin.app.workspace.on("file-menu", (menu, entry) => {
+    if (entry instanceof import_obsidian.TFolder) add(menu, [entry]);
+  }));
+  if (config.multiple !== false) plugin.registerEvent(plugin.app.workspace.on("files-menu", add));
+}
+
+// publish/diagnostics.ts
+var sink;
+var enabled = () => false;
+var span = 0;
+var repetitions = /* @__PURE__ */ new Map();
+var noop = () => {
+};
+function isPromise(value) {
+  return value != null && Object.prototype.toString.call(value) === "[object Promise]";
+}
+function isError(value) {
+  return value instanceof Error || Object.prototype.toString.call(value) === "[object Error]";
+}
+function report(stage, error) {
+  try {
+    const failure = isError(error) ? error : new Error(String(error));
+    if (!isError(error)) Object.defineProperty(failure, "cause", { value: error, configurable: true });
+    if (sink) sink.error(stage + ".failed", failure);
+    else console.error("[Plugin diagnostics] " + stage + ".failed", failure);
+  } catch (e) {
+  }
+}
+var diagnostics = {
+  attach(target, isEnabled) {
+    sink = target;
+    enabled = isEnabled;
+    repetitions.clear();
+  },
+  detach(target) {
+    if (sink === target) {
+      sink = void 0;
+      enabled = () => false;
+    }
+  },
+  start(stage) {
+    try {
+      if (!sink || !enabled()) return noop;
+      const started = performance.now();
+      const previous = repetitions.get(stage);
+      if (previous && started - previous.at < 1e3) {
+        if (++previous.count > 4) return noop;
+      } else {
+        if (repetitions.size >= 512) repetitions.delete(repetitions.keys().next().value);
+        repetitions.set(stage, { at: started, count: 1 });
+      }
+      const id = ++span, target = sink;
+      target.info(stage + ".start", { span: id });
+      return () => {
+        try {
+          target.info(stage + ".end", { span: id, elapsedMs: Math.round(performance.now() - started) });
+        } catch (e) {
+        }
+      };
+    } catch (e) {
+      return noop;
+    }
+  },
+  run(stage, action) {
+    const end = this.start(stage);
+    try {
+      const result = action();
+      if (isPromise(result)) {
+        return result.then((value) => {
+          end();
+          return value;
+        }, (error) => {
+          this.failure(stage, error);
+          end();
+          throw error;
+        });
+      }
+      end();
+      return result;
+    } catch (error) {
+      this.failure(stage, error);
+      end();
+      throw error;
+    }
+  },
+  /** Consume failures only where Obsidian invokes us; internal operations keep rejecting. */
+  guard(stage, action, fallback) {
+    const recover2 = (error) => {
+      var _a;
+      this.failure(stage, error);
+      if (!(isError(error) && error.name === "AbortError")) {
+        try {
+          (_a = sink == null ? void 0 : sink.notifyFailure) == null ? void 0 : _a.call(sink, stage);
+        } catch (e) {
+        }
+      }
+      return fallback;
+    };
+    try {
+      const result = action();
+      return isPromise(result) ? result.catch(recover2) : result;
+    } catch (error) {
+      return recover2(error);
+    }
+  },
+  wrap(stage, callback, fallback) {
+    return function(...args) {
+      return diagnostics.guard(stage, () => callback.apply(this, args), fallback);
+    };
+  },
+  request(stage, action, ...args) {
+    return this.run(stage, () => {
+      const result = action(...args);
+      const reportStatus = (value) => {
+        const status = value == null ? void 0 : value.status;
+        if (typeof status === "number" && status >= 400) {
+          const error = new Error("HTTP request failed with status " + status);
+          error.httpStatus = status;
+          if (sink) {
+            try {
+              sink.error(stage + ".http_failed", error);
+            } catch (e) {
+            }
+          } else report(stage + ".http_failed", error);
+        }
+      };
+      if (isPromise(result)) return result.then((value) => {
+        reportStatus(value);
+        return value;
+      });
+      reportStatus(result);
+      return result;
+    });
+  },
+  failure(stage, error) {
+    if (isError(error) && error.name === "AbortError") {
+      try {
+        sink == null ? void 0 : sink.info(stage + ".cancelled");
+      } catch (e) {
+      }
+    } else report(stage, error != null ? error : new Error("Operation failed"));
+  },
+  legacy(level, stage) {
+    try {
+      if (level === "info") sink == null ? void 0 : sink.info(stage);
+      else sink == null ? void 0 : sink.error(stage, { outcome: "failed" });
+    } catch (e) {
+    }
+  }
+};
+
+// publish/account-credit-client.ts
+var import_obsidian2 = require("obsidian");
 async function consumeAccountUnits(host, eventId, amount) {
-  var _a, _b, _c, _d, _e, _f;
-  if (!host.state.billingAccountLinked || !host.installationId) return { kind: "auth-required" };
-  if (!Number.isSafeInteger(amount) || amount <= 0 || !eventId) return { kind: "error" };
-  if (!host.state.billingAccessToken && !await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
-  const send3 = () => (0, import_obsidian.requestUrl)({
-    url: "https://app.tutivsoft.com/api/v1/billing/usage/consume",
-    method: "POST",
-    throw: false,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
-    body: JSON.stringify({ app_id: host.appId, installation_id: host.installationId, event_id: eventId, amount })
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "account-credit-client.consumeAccountUnits")) != null ? _c : (() => {
   });
   try {
-    let response = await send3();
-    if (response.status === 401 && host.state.billingRefreshToken) {
-      if (!await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
-      response = await send3();
-    }
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    const data = (_a = response.json) == null ? void 0 : _a.data;
-    if ((data == null ? void 0 : data.state) !== "committed" || data.app_id !== host.appId || data.installation_id !== host.installationId || data.event_id !== eventId || data.amount !== amount || !Number.isSafeInteger(data.free_units) || !Number.isSafeInteger(data.paid_units) || data.free_units < 0 || data.paid_units < 0 || data.free_units + data.paid_units !== amount && !(data.retained_access === true && data.free_units === 0 && data.paid_units === 0 && ((_b = data.legacy_units) != null ? _b : 0) === 0)) return { kind: "error" };
-    const freeRemaining = Number((_c = data.free_usage) == null ? void 0 : _c.remaining), balance = Number((_f = (_d = data.credits) == null ? void 0 : _d.total_available) != null ? _f : (_e = data.credits) == null ? void 0 : _e.balance);
-    return {
-      kind: "ok",
-      freeUnits: data.free_units,
-      paidUnits: data.paid_units,
-      ...Number.isFinite(freeRemaining) ? { freeRemaining: Math.max(0, freeRemaining) } : {},
-      ...Number.isFinite(balance) ? { balance: Math.max(0, balance) } : {}
+    if (!host.state.billingAccountLinked || !host.installationId) return { kind: "auth-required" };
+    if (!Number.isSafeInteger(amount) || amount <= 0 || !eventId) return { kind: "error" };
+    if (!host.state.billingAccessToken && !await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
+    const send3 = () => {
+      var _a2, _b2, _c2;
+      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.account-credit-client.consumeAccountUnits", import_obsidian2.requestUrl, {
+        url: "https://app.tutivsoft.com/api/v1/billing/usage/consume",
+        method: "POST",
+        throw: false,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: host.appId, installation_id: host.installationId, event_id: eventId, amount })
+      })) != null ? _c2 : (0, import_obsidian2.requestUrl)({
+        url: "https://app.tutivsoft.com/api/v1/billing/usage/consume",
+        method: "POST",
+        throw: false,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
+        body: JSON.stringify({ app_id: host.appId, installation_id: host.installationId, event_id: eventId, amount })
+      });
     };
-  } catch (e) {
-    return { kind: "error" };
+    try {
+      let response = await send3();
+      if (response.status === 401 && host.state.billingRefreshToken) {
+        if (!await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
+        response = await send3();
+      }
+      if (response.status === 402) return { kind: "insufficient" };
+      if (response.status === 401 || response.status === 403) return { kind: "auth-required" };
+      if (response.status < 200 || response.status >= 300) return { kind: "error" };
+      const data = (_d = response.json) == null ? void 0 : _d.data;
+      if ((data == null ? void 0 : data.state) !== "committed" || data.app_id !== host.appId || data.installation_id !== host.installationId || data.event_id !== eventId || data.amount !== amount || !Number.isSafeInteger(data.free_units) || !Number.isSafeInteger(data.paid_units) || data.free_units < 0 || data.paid_units < 0 || data.free_units + data.paid_units !== amount && !(data.retained_access === true && data.free_units === 0 && data.paid_units === 0 && ((_e = data.legacy_units) != null ? _e : 0) === 0)) return { kind: "error" };
+      const freeRemaining = Number((_f = data.free_usage) == null ? void 0 : _f.remaining), balance = Number((_i = (_g = data.credits) == null ? void 0 : _g.total_available) != null ? _i : (_h = data.credits) == null ? void 0 : _h.balance);
+      return {
+        kind: "ok",
+        freeUnits: data.free_units,
+        paidUnits: data.paid_units,
+        ...Number.isFinite(freeRemaining) ? { freeRemaining: Math.max(0, freeRemaining) } : {},
+        ...Number.isFinite(balance) ? { balance: Math.max(0, balance) } : {}
+      };
+    } catch (caughtError1) {
+      diagnostics.failure("account-credit-client.caught_2", caughtError1);
+      return { kind: "error" };
+    }
+  } catch (diagnosticError1) {
+    (_k = (_j = diagnostics) == null ? void 0 : _j.failure) == null ? void 0 : _k.call(_j, "account-credit-client.consumeAccountUnits", diagnosticError1);
+    throw diagnosticError1;
+  } finally {
+    diagnosticEnd1();
+  }
+}
+
+// publish/settings-layout.ts
+var keySettings = {
+  "culebra-ai-spell-correct": ["Review before applying"],
+  "denali-ai-file-renamer-front-matter": ["Rename new notes automatically", "Review before applying"],
+  "garda-handwriting-text-ocr": ["AI connection"],
+  "torbert-text-ai-obsidian": ["Review before applying", "AI classification folders", "Custom prompt presets", "OpenRouter API key"],
+  "kairo-quick-capture": ["Destination mode", "Automatic delivery"],
+  "cairn-vault-linter": ["Review repairs before applying", "Ignored folders"],
+  "tundra-frontmatter-wrangler": ["Existing AI properties", "Review before applying"],
+  "meridian-timeline": ["Date properties"],
+  "aegis-note-locker": ["Session password", "Session timeout"],
+  "mica-webp-optimizer": ["Automatic optimization", "After conversion", "Watched folders"]
+};
+var appTitles = {
+  "kairo-quick-capture": "Kairo Quick Capture",
+  "culebra-ai-spell-correct": "Culebra AI Spell Correct"
+};
+function label(node) {
+  var _a;
+  return (((_a = node.querySelector(".setting-item-name")) == null ? void 0 : _a.textContent) || node.textContent || "").trim();
+}
+function makeSection(root, title, kind = "everyday") {
+  const section = root.createEl("section", { cls: `ui-settings-section ui-section-${kind}` });
+  section.createEl("h3", { text: title, cls: "ui-section-heading" });
+  return section.createDiv({ cls: "ui-settings-card" });
+}
+function applySettingsLayout(root, appId) {
+  var _a, _b;
+  if (root.querySelector(":scope > .ui-settings-section")) return;
+  root.addClass("ui-settings-layout");
+  const nodes = Array.from(root.children);
+  const account = nodes.find((node) => node.classList.contains("constance-account-billing-section"));
+  let accountCard;
+  if (account) {
+    account.addClass("ui-settings-section", "ui-section-billing");
+    const heading = account.querySelector(":scope > h3");
+    heading == null ? void 0 : heading.addClass("ui-section-heading");
+    const content = Array.from(account.children).filter((node) => node !== heading);
+    accountCard = account.createDiv({ cls: "ui-settings-card" });
+    content.forEach((node) => accountCard.appendChild(node));
+    accountCard.querySelectorAll("button").forEach((button) => {
+      var _a2;
+      if (((_a2 = button.textContent) == null ? void 0 : _a2.trim()) === "Connect") button.addClass("mod-cta");
+    });
+  }
+  const title = nodes.find((node) => /^H[12]$/.test(node.tagName)) || (appTitles[appId] ? root.createEl("h2", { text: appTitles[appId] }) : void 0);
+  if (title) {
+    title.addClass("ui-settings-title");
+    root.prepend(title);
+  }
+  if (account) {
+    if (title) title.after(account);
+    else root.prepend(account);
+  }
+  let current;
+  let support;
+  let viewSection;
+  let billingContext = false;
+  const supportLabels = /* @__PURE__ */ new Set(["Help", "Debug logging", "Enable debug logging", "Diagnostics"]);
+  const billingLabels = /^(?:Billing(?: & usage)?|Credits|Credit balance|OCR credits|Purchased balance|Refresh (?:purchased )?balance|Refresh account|Buy .+|Account)$/i;
+  for (const node of nodes) {
+    if (node === account || node === title) continue;
+    const name = label(node);
+    if (node.classList.contains("setting-item") && supportLabels.has(name)) {
+      support || (support = makeSection(root, "Help and diagnostics", "support"));
+      support.appendChild(node);
+      continue;
+    }
+    if (node.classList.contains("setting-item") && /^Settings (?:mode|view)$/i.test(name)) {
+      const view = makeSection(root, "Settings view");
+      view.appendChild(node);
+      viewSection = view.parentElement;
+      continue;
+    }
+    const isHeading = /^H[1-4]$/.test(node.tagName) || node.classList.contains("setting-item-heading");
+    if (isHeading) {
+      billingContext = /^Billing(?: & usage)?$/i.test(name);
+      if (billingContext) {
+        node.remove();
+        continue;
+      }
+      const kind = /recovery|privacy|diagnostic/i.test(name) ? "support" : /AI|quality|naming|capture|date|original files/i.test(name) ? "feature" : "everyday";
+      current = makeSection(root, name, kind);
+      node.remove();
+      continue;
+    }
+    if (accountCard && (node.classList.contains("ui-billing-packs") || node.classList.contains("ui-billing-summary") || node.classList.contains("setting-item") && billingLabels.test(name) || billingContext && node.tagName === "P")) {
+      accountCard.appendChild(node);
+      if (node.tagName === "P") node.addClass("ui-billing-summary");
+      continue;
+    }
+    billingContext = false;
+    current || (current = makeSection(root, "Everyday settings"));
+    current.appendChild(node);
+    if (node.tagName === "P") node.addClass("ui-section-note");
+  }
+  if (viewSection) {
+    if (account) account.after(viewSection);
+    else if (title) title.after(viewSection);
+    else root.prepend(viewSection);
+  }
+  if (support) root.appendChild(support.parentElement);
+  for (const card of Array.from(root.querySelectorAll(".ui-settings-card"))) {
+    if (!card.children.length) (_a = card.parentElement) == null ? void 0 : _a.remove();
+  }
+  const rows = Array.from(root.querySelectorAll(".ui-settings-card .setting-item")).filter((node) => !node.closest(".ui-section-billing, .ui-section-support") && !/^Settings (mode|view)$/i.test(label(node)));
+  const limit = Math.max(1, Math.ceil(rows.length * 0.1));
+  let marked = 0;
+  for (const name of keySettings[appId] || []) {
+    const row = rows.find((node) => label(node) === name);
+    if (!row || marked >= limit) continue;
+    row.classList.add("ui-key-setting");
+    const badge = document.createElement("span");
+    badge.className = "ui-key-badge";
+    badge.textContent = "Important";
+    (_b = row.querySelector(".setting-item-name")) == null ? void 0 : _b.appendChild(badge);
+    marked++;
   }
 }
 
 // publish/account-guidance.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 function renderAccountGuidance(section, host) {
-  if (host.connected) return;
-  section.createEl("h4", { text: "Get started" });
-  section.createEl("p", { text: "Create an account or sign in below, verify your email if requested, then connect your account." });
-  const label = section.createEl("p", { text: `Default lifetime allowance (4 October 2026): ${host.defaultAllowance.toLocaleString()} ${host.unit} once per registered account. Connect to confirm your remaining balance.` });
-  section.createEl("p", { text: "Your free allowance is our thank-you for trying the app. A registered, connected account is required to help prevent abuse. Your lifetime allowance is shared across installations and is used before purchased credits." });
-  section.createEl("p", { text: host.workflow });
-  section.createEl("p", { text: "When you are ready, you can add more credits at affordable prices. Current offers and prices appear below." });
-  void (0, import_obsidian2.requestUrl)({ url: `https://app.tutivsoft.com/api/v1/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false }).then((response) => {
-    var _a, _b;
-    const p = response.status === 200 ? (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.account_free_usage : null;
-    if (!p || !Number.isFinite(p.allowance) || p.allowance < 0) return;
-    label.setText(p.enabled ? `Current free allowance: ${Number(p.allowance).toLocaleString()} ${p.unit} per registered account (${p.period}). Connect to see your remaining balance.` : "A registered, connected account is required. Check the current credit options below.");
-  }).catch(() => {
-  });
+  var _a;
+  const diagnosticAction1 = () => {
+    const guide = section.createDiv({ cls: "ui-account-intro" });
+    guide.createEl("h4", { text: host.connected ? "Ready to use" : "Get started" });
+    if (host.connected) {
+      guide.createEl("p", { text: host.workflow });
+      return;
+    }
+    guide.createEl("p", { text: "Enter your email and password below, then choose Connect to sign in or create an account." });
+    const label2 = guide.createEl("p", { text: `Free credits: ${host.defaultAllowance.toLocaleString()} ${host.unit} per account. Connect to check what remains.` });
+    const help = guide.createEl("details");
+    help.createEl("summary", { text: "Email not received?" });
+    help.createEl("p", { text: "Check spam and confirm the email address below. Use the emailed verification link, return here, and Connect again. Correct the email below if needed. If the link expired or no email arrived, open your account page for available recovery options." });
+    help.createEl("a", { text: "Open account page", href: "https://app.tutivsoft.com", attr: { target: "_blank", rel: "noopener noreferrer" } });
+    help.createEl("p", { text: "Forgot your password? Use the reset link below. Do not create another account to restore purchases." });
+    const details = guide.createEl("details");
+    details.createEl("summary", { text: "About the allowance and purchases" });
+    details.createEl("p", { text: host.workflow });
+    details.createEl("p", { text: "Connect your account to load your free and purchased credits. Free credits are used first, then purchased credits. Your balance stays with your account after reinstalling. Current quantities and prices are shown in Account." });
+    void diagnostics.guard("account-guidance.background_1", () => {
+      var _a2, _b, _c;
+      return ((_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b.call(_a2, "network.account-guidance.renderAccountGuidance", import_obsidian3.requestUrl, { url: `https://app.tutivsoft.com/api/v1/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })) != null ? _c : (0, import_obsidian3.requestUrl)({ url: `https://app.tutivsoft.com/api/v1/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })).then((response) => {
+        var _a3, _b2;
+        const p = response.status === 200 ? (_b2 = (_a3 = response.json) == null ? void 0 : _a3.data) == null ? void 0 : _b2.account_free_usage : null;
+        if (!p || !Number.isFinite(p.allowance) || p.allowance < 0) return;
+        const unit = String(p.unit).replace(/_/g, " ");
+        label2.setText(p.enabled ? `Free credits: ${Number(p.allowance).toLocaleString()} ${unit} per account. Connect to check what remains.` : "Connect to check your account access and available credits.");
+      }).catch((rejectedError1) => {
+        diagnostics.failure("account-guidance.rejected_2", rejectedError1);
+      });
+    });
+  };
+  return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("account-guidance.renderAccountGuidance", diagnosticAction1) : diagnosticAction1();
 }
 
 // publish/billing-checkout.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var running = /* @__PURE__ */ new WeakMap();
 var timers = /* @__PURE__ */ new WeakMap();
 async function send(host, path, method, body, key) {
-  const request = () => (0, import_obsidian3.requestUrl)({
-    url: `https://app.tutivsoft.com/api/v1/billing/${path}`,
-    method,
-    throw: false,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...key ? { "Idempotency-Key": key } : {} },
-    ...body ? { body: JSON.stringify(body) } : {}
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-checkout.send")) != null ? _c : (() => {
   });
-  let response = await request();
-  if (response.status === 401 && await host.refreshSession()) response = await request();
-  return response;
+  try {
+    const request = () => {
+      var _a2, _b2, _c2;
+      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.billing-checkout.send", import_obsidian4.requestUrl, {
+        url: `https://app.tutivsoft.com/api/v1/billing/${path}`,
+        method,
+        throw: false,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...key ? { "Idempotency-Key": key } : {} },
+        ...body ? { body: JSON.stringify(body) } : {}
+      })) != null ? _c2 : (0, import_obsidian4.requestUrl)({
+        url: `https://app.tutivsoft.com/api/v1/billing/${path}`,
+        method,
+        throw: false,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...key ? { "Idempotency-Key": key } : {} },
+        ...body ? { body: JSON.stringify(body) } : {}
+      });
+    };
+    let response = await request();
+    if (response.status === 401 && await host.refreshSession()) response = await request();
+    return await response;
+  } catch (diagnosticError1) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "billing-checkout.send", diagnosticError1);
+    throw diagnosticError1;
+  } finally {
+    diagnosticEnd1();
+  }
 }
 function resumeAccountCheckout(host) {
   var _a;
   const entry = findPending(host.state);
   if (!entry || !host.state.billingAccountLinked || pendingOwner(entry.pending) !== host.state.billingEmail || timers.has(host.state)) return;
   const timer = setTimeout(() => {
-    timers.delete(host.state);
-    if (running.has(host.state)) {
-      resumeAccountCheckout(host);
-      return;
-    }
-    const operation = recover(host);
-    running.set(host.state, operation);
-    void operation.catch(() => void 0).finally(() => {
-      running.delete(host.state);
-      resumeAccountCheckout(host);
+    return diagnostics.guard("billing-checkout.timer_1", () => {
+      timers.delete(host.state);
+      if (running.has(host.state)) {
+        resumeAccountCheckout(host);
+        return;
+      }
+      const operation = recover(host);
+      running.set(host.state, operation);
+      void diagnostics.guard("billing-checkout.background_2", () => operation.catch((rejectedError1) => {
+        diagnostics.failure("billing-checkout.rejected_2", rejectedError1);
+        return void 0;
+      }).finally(() => {
+        running.delete(host.state);
+        resumeAccountCheckout(host);
+      }));
     });
   }, 15e3);
   timers.set(host.state, timer);
@@ -130,39 +492,48 @@ function pendingOwner(pending) {
   return pending.email || pending.owner;
 }
 async function recover(host) {
-  var _a, _b, _c;
-  const entry = findPending(host.state);
-  if (!entry) return;
-  const { key, pending } = entry;
-  if (!host.state.billingAccountLinked || pendingOwner(pending) !== host.state.billingEmail) return;
-  const current = () => host.state[key] === pending && pendingOwner(pending) === host.state.billingEmail;
-  let checkoutId = pending.checkoutId || pending.checkout_id;
-  if (!checkoutId) {
-    const priceId = pending.price_id;
-    const idempotencyKey = pending.key || pending.idempotency_key;
-    const body = priceId ? { app_id: host.appId, installation_id: host.installationId, price_id: priceId, quantity: 1 } : { app_id: host.appId, installation_id: host.installationId, plan_code: pending.plan || pending.plan_code, quantity: 1 };
-    const response2 = await send(host, priceId ? "checkout-price" : "checkout", "POST", body, idempotencyKey);
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-checkout.recover")) != null ? _c : (() => {
+  });
+  try {
+    const entry = findPending(host.state);
+    if (!entry) return;
+    const { key, pending } = entry;
+    if (!host.state.billingAccountLinked || pendingOwner(pending) !== host.state.billingEmail) return;
+    const current = () => host.state[key] === pending && pendingOwner(pending) === host.state.billingEmail;
+    let checkoutId = pending.checkoutId || pending.checkout_id;
+    if (!checkoutId) {
+      const priceId = pending.price_id;
+      const idempotencyKey = pending.key || pending.idempotency_key;
+      const body = priceId ? { app_id: host.appId, installation_id: host.installationId, price_id: priceId, quantity: 1 } : { app_id: host.appId, installation_id: host.installationId, plan_code: pending.plan || pending.plan_code, quantity: 1 };
+      const response2 = await send(host, priceId ? "checkout-price" : "checkout", "POST", body, idempotencyKey);
+      if (!current()) return;
+      if (response2.status < 200 || response2.status >= 300 || !((_e = (_d = response2.json) == null ? void 0 : _d.data) == null ? void 0 : _e.checkout_id)) return;
+      checkoutId = String(response2.json.data.checkout_id);
+      if ("checkout_id" in pending || key !== "pendingAccountCheckout") pending.checkout_id = checkoutId;
+      else pending.checkoutId = checkoutId;
+      await host.persist();
+    }
+    const response = await send(host, `checkouts/${encodeURIComponent(checkoutId)}`, "GET");
     if (!current()) return;
-    if (response2.status < 200 || response2.status >= 300 || !((_b = (_a = response2.json) == null ? void 0 : _a.data) == null ? void 0 : _b.checkout_id)) return;
-    checkoutId = String(response2.json.data.checkout_id);
-    if ("checkout_id" in pending || key !== "pendingAccountCheckout") pending.checkout_id = checkoutId;
-    else pending.checkoutId = checkoutId;
-    await host.persist();
-  }
-  const response = await send(host, `checkouts/${encodeURIComponent(checkoutId)}`, "GET");
-  if (!current()) return;
-  if (response.status < 200 || response.status >= 300) return;
-  const data = (_c = response.json) == null ? void 0 : _c.data;
-  if ((data == null ? void 0 : data.settled) || ["completed", "fulfilled", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(data == null ? void 0 : data.status)) {
-    await host.syncBalance();
-    if (!current()) return;
-    host.state[key] = key === "pendingAccountCheckout" ? null : void 0;
-    await host.persist();
+    if (response.status < 200 || response.status >= 300) return;
+    const data = (_f = response.json) == null ? void 0 : _f.data;
+    if ((data == null ? void 0 : data.settled) || ["completed", "fulfilled", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(data == null ? void 0 : data.status)) {
+      await host.syncBalance();
+      if (!current()) return;
+      host.state[key] = key === "pendingAccountCheckout" ? null : void 0;
+      await host.persist();
+    }
+  } catch (diagnosticError2) {
+    (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "billing-checkout.recover", diagnosticError2);
+    throw diagnosticError2;
+  } finally {
+    diagnosticEnd2();
   }
 }
 
 // publish/constance-account.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
 var ConstanceAccountError = class extends Error {
   constructor(message, status) {
@@ -181,87 +552,155 @@ function errorDetail(response, fallback) {
   return String((detail == null ? void 0 : detail.message) || (typeof detail === "string" ? detail : "") || (payload == null ? void 0 : payload.message) || fallback);
 }
 async function linkAuthenticatedInstallation(adapter, token) {
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.linkAuthenticatedInstallation")) != null ? _c : (() => {
+  });
   try {
-    await linkInstallation(adapter, token);
-  } catch (error) {
-    if (error instanceof ConstanceAccountError && error.status === 401) {
-      adapter.state.billingAccessToken = "";
-      adapter.state.billingRefreshToken = "";
-      adapter.state.billingAccountLinked = false;
-      await adapter.persist();
+    try {
+      await linkInstallation(adapter, token);
+    } catch (error) {
+      diagnostics.failure("constance-account.caught_1", error);
+      if (error instanceof ConstanceAccountError && error.status === 401) {
+        adapter.state.billingAccessToken = "";
+        adapter.state.billingRefreshToken = "";
+        adapter.state.billingAccountLinked = false;
+        await adapter.persist();
+      }
+      throw error;
     }
-    throw error;
+  } catch (diagnosticError1) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.linkAuthenticatedInstallation", diagnosticError1);
+    throw diagnosticError1;
+  } finally {
+    diagnosticEnd1();
   }
 }
 async function authenticate(mode, email, password, installationId) {
-  var _a, _b, _c, _d;
-  const body = mode !== "login" ? { email, password, external_customer_id: installationId } : { email, password };
-  const response = await (0, import_obsidian4.requestUrl)({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    throw: false
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.authenticate")) != null ? _c : (() => {
   });
-  if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Billing ${mode} failed (HTTP ${response.status})`), response.status);
+  try {
+    const body = mode !== "login" ? { email, password, external_customer_id: installationId } : { email, password };
+    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.authenticate", import_obsidian5.requestUrl, {
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      throw: false
+    })) != null ? _f : (0, import_obsidian5.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      throw: false
+    }));
+    if (response.status < 200 || response.status >= 300) {
+      throw new ConstanceAccountError(errorDetail(response, `Could not connect your account. Check your connection and try again.`), response.status);
+    }
+    if (((_g = response.json) == null ? void 0 : _g.verification_required) === true) return { verificationRequired: true };
+    const token = String(((_h = response.json) == null ? void 0 : _h.access_token) || "");
+    const refreshToken = String(((_i = response.json) == null ? void 0 : _i.refresh_token) || "");
+    if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number((_j = response.json) == null ? void 0 : _j.expires_in) || 900 };
+    throw new Error("Could not sign in. Try connecting again.");
+  } catch (diagnosticError2) {
+    (_l = (_k = diagnostics) == null ? void 0 : _k.failure) == null ? void 0 : _l.call(_k, "constance-account.authenticate", diagnosticError2);
+    throw diagnosticError2;
+  } finally {
+    diagnosticEnd2();
   }
-  if (((_a = response.json) == null ? void 0 : _a.verification_required) === true) return { verificationRequired: true };
-  const token = String(((_b = response.json) == null ? void 0 : _b.access_token) || "");
-  const refreshToken = String(((_c = response.json) == null ? void 0 : _c.refresh_token) || "");
-  if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number((_d = response.json) == null ? void 0 : _d.expires_in) || 900 };
-  throw new Error("Constance did not return an account token.");
 }
 async function linkInstallation(adapter, token) {
-  const response = await (0, import_obsidian4.requestUrl)({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      app_id: adapter.appId,
-      installation_id: adapter.installationId,
-      legacy_external_customer_id: adapter.installationId,
-      platform: "obsidian",
-      app_version: adapter.appVersion || void 0
-    }),
-    throw: false
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const diagnosticEnd3 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.linkInstallation")) != null ? _c : (() => {
   });
-  if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Installation link failed (HTTP ${response.status})`), response.status);
+  try {
+    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.linkInstallation", import_obsidian5.requestUrl, {
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        app_id: adapter.appId,
+        installation_id: adapter.installationId,
+        legacy_external_customer_id: adapter.installationId,
+        platform: "obsidian",
+        app_version: adapter.appVersion || void 0
+      }),
+      throw: false
+    })) != null ? _f : (0, import_obsidian5.requestUrl)({
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        app_id: adapter.appId,
+        installation_id: adapter.installationId,
+        legacy_external_customer_id: adapter.installationId,
+        platform: "obsidian",
+        app_version: adapter.appVersion || void 0
+      }),
+      throw: false
+    }));
+    if (response.status < 200 || response.status >= 300) {
+      throw new ConstanceAccountError(errorDetail(response, `Could not connect this installation to your account. Try connecting again.`), response.status);
+    }
+  } catch (diagnosticError3) {
+    (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "constance-account.linkInstallation", diagnosticError3);
+    throw diagnosticError3;
+  } finally {
+    diagnosticEnd3();
   }
 }
 async function signInBillingAccount(adapter, password, mode) {
-  const email = adapter.state.billingEmail.trim().toLowerCase();
-  const journalState = adapter.state;
-  const owner = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
-  if (owner && owner !== email) throw new Error(`An unfinished billing request belongs to ${owner}. Connect that account to recover it first.`);
-  if (!email || !email.includes("@")) throw new Error("Enter a valid billing email.");
-  if (Array.from(password).length < 8 || Array.from(password).length > 128) throw new Error("Password must be between 8 and 128 characters.");
-  if (!adapter.installationId) throw new Error("The plugin installation ID is not ready.");
-  const result = await authenticate(mode, email, password, adapter.installationId);
-  if (!result.accessToken) {
-    clearBillingSession(adapter.state);
-    adapter.state.billingEmail = email;
-    adapter.state.billingAccountLinked = false;
-    adapter.state.billingRegistrationPending = true;
-    await adapter.persist();
-    throw new Error("Registered but not logged in. Check your email, click the confirmation link, then sign in here.");
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd4 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.signInBillingAccount")) != null ? _c : (() => {
+  });
+  try {
+    const email = adapter.state.billingEmail.trim().toLowerCase();
+    const journalState = adapter.state;
+    const owner = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
+    if (owner && owner !== email) throw new Error(`A pending action belongs to ${owner}. Connect that account to resume it first.`);
+    if (!email || !email.includes("@")) throw new Error("Enter a valid email address.");
+    if (Array.from(password).length < 8 || Array.from(password).length > 128) throw new Error("Password must be between 8 and 128 characters.");
+    if (!adapter.installationId) throw new Error("The plugin is still starting. Try again shortly.");
+    const result = await authenticate(mode, email, password, adapter.installationId);
+    if (!result.accessToken) {
+      clearBillingSession(adapter.state);
+      adapter.state.billingEmail = email;
+      adapter.state.billingAccountLinked = false;
+      adapter.state.billingRegistrationPending = true;
+      await adapter.persist();
+      throw new Error("Registered but not logged in. Check your email, click the confirmation link, then sign in here.");
+    }
+    await completeBillingSignIn(adapter, email, result);
+  } catch (diagnosticError4) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.signInBillingAccount", diagnosticError4);
+    throw diagnosticError4;
+  } finally {
+    diagnosticEnd4();
   }
-  await completeBillingSignIn(adapter, email, result);
 }
 async function completeBillingSignIn(adapter, email, session) {
-  if (!session.accessToken || !session.refreshToken) throw new Error("Constance did not return a complete account session.");
-  adapter.state.billingEmail = email;
-  adapter.state.billingAccessToken = session.accessToken;
-  adapter.state.billingRefreshToken = session.refreshToken;
-  adapter.state.billingAccessExpiresAt = Date.now() + (session.expiresIn || 900) * 1e3;
-  adapter.state.billingAccountLinked = false;
-  adapter.state.billingRegistrationPending = false;
-  await adapter.persist();
-  await linkAuthenticatedInstallation(adapter, session.accessToken);
-  adapter.state.billingAccountLinked = true;
-  await adapter.persist();
-  await adapter.syncBalance();
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd5 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.completeBillingSignIn")) != null ? _c : (() => {
+  });
+  try {
+    if (!session.accessToken || !session.refreshToken) throw new Error("Could not complete sign-in. Try connecting again.");
+    adapter.state.billingEmail = email;
+    adapter.state.billingAccessToken = session.accessToken;
+    adapter.state.billingRefreshToken = session.refreshToken;
+    adapter.state.billingAccessExpiresAt = Date.now() + (session.expiresIn || 900) * 1e3;
+    adapter.state.billingAccountLinked = false;
+    adapter.state.billingRegistrationPending = false;
+    await adapter.persist();
+    await linkAuthenticatedInstallation(adapter, session.accessToken);
+    adapter.state.billingAccountLinked = true;
+    await adapter.persist();
+    await adapter.syncBalance();
+  } catch (diagnosticError5) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.completeBillingSignIn", diagnosticError5);
+    throw diagnosticError5;
+  } finally {
+    diagnosticEnd5();
+  }
 }
 function clearBillingSession(state) {
   state.billingAccessToken = "";
@@ -271,112 +710,174 @@ function clearBillingSession(state) {
 }
 var refreshInFlight = null;
 async function refreshBillingSession(state, persist) {
-  if (!state.billingRefreshToken) return false;
-  if (refreshInFlight) return refreshInFlight;
-  const originalToken = state.billingRefreshToken;
-  refreshInFlight = (async () => {
-    var _a, _b, _c;
-    let response;
-    try {
-      response = await (0, import_obsidian4.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false });
-    } catch (e) {
-      return false;
-    }
-    if (state.billingRefreshToken !== originalToken) return false;
-    if (response.status === 401 || response.status === 403) {
-      clearBillingSession(state);
-      await persist();
-      return false;
-    }
-    if (response.status < 200 || response.status >= 300) return false;
-    const access = String(((_a = response.json) == null ? void 0 : _a.access_token) || "");
-    const refresh = String(((_b = response.json) == null ? void 0 : _b.refresh_token) || "");
-    if (!access || !refresh) {
-      clearBillingSession(state);
-      await persist();
-      return false;
-    }
-    state.billingAccessToken = access;
-    state.billingRefreshToken = refresh;
-    state.billingAccessExpiresAt = Date.now() + (Number((_c = response.json) == null ? void 0 : _c.expires_in) || 900) * 1e3;
-    await persist();
-    return true;
-  })();
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd7 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.refreshBillingSession")) != null ? _c : (() => {
+  });
   try {
-    return await refreshInFlight;
+    if (!state.billingRefreshToken) return false;
+    if (refreshInFlight) return await refreshInFlight;
+    const originalToken = state.billingRefreshToken;
+    refreshInFlight = (async () => {
+      var _a2, _b2, _c2, _d2, _e2, _f, _g, _h, _i, _j, _k;
+      const diagnosticEnd8 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "constance-account.background.8317")) != null ? _c2 : (() => {
+      });
+      try {
+        let response;
+        try {
+          response = await ((_f = (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.request) == null ? void 0 : _e2.call(_d2, "network.constance-account.refreshBillingSession", import_obsidian5.requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false })) != null ? _f : (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }));
+        } catch (caughtError2) {
+          diagnostics.failure("constance-account.caught_3", caughtError2);
+          return false;
+        }
+        if (state.billingRefreshToken !== originalToken) return false;
+        if (response.status === 401 || response.status === 403) {
+          clearBillingSession(state);
+          await persist();
+          return false;
+        }
+        if (response.status < 200 || response.status >= 300) return false;
+        const access = String(((_g = response.json) == null ? void 0 : _g.access_token) || "");
+        const refresh = String(((_h = response.json) == null ? void 0 : _h.refresh_token) || "");
+        if (!access || !refresh) {
+          clearBillingSession(state);
+          await persist();
+          return false;
+        }
+        state.billingAccessToken = access;
+        state.billingRefreshToken = refresh;
+        state.billingAccessExpiresAt = Date.now() + (Number((_i = response.json) == null ? void 0 : _i.expires_in) || 900) * 1e3;
+        await persist();
+        return true;
+      } catch (diagnosticError8) {
+        (_k = (_j = diagnostics) == null ? void 0 : _j.failure) == null ? void 0 : _k.call(_j, "constance-account.background.8317", diagnosticError8);
+        throw diagnosticError8;
+      } finally {
+        diagnosticEnd8();
+      }
+    })();
+    try {
+      return await refreshInFlight;
+    } finally {
+      refreshInFlight = null;
+    }
+  } catch (diagnosticError7) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.refreshBillingSession", diagnosticError7);
+    throw diagnosticError7;
   } finally {
-    refreshInFlight = null;
+    diagnosticEnd7();
   }
 }
 async function requestAuthenticatedBilling(state, persist, options) {
-  if (state.billingRefreshToken && (!state.billingAccessToken || Date.now() >= state.billingAccessExpiresAt - 6e4)) {
-    if (!await refreshBillingSession(state, persist) && state.billingRefreshToken) return { status: 503 };
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd9 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.requestAuthenticatedBilling")) != null ? _c : (() => {
+  });
+  try {
+    if (state.billingRefreshToken && (!state.billingAccessToken || Date.now() >= state.billingAccessExpiresAt - 6e4)) {
+      if (!await refreshBillingSession(state, persist) && state.billingRefreshToken) return { status: 503 };
+    }
+    const send3 = () => {
+      var _a2, _b2, _c2;
+      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.requestAuthenticatedBilling", import_obsidian5.requestUrl, { ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false })) != null ? _c2 : (0, import_obsidian5.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
+    };
+    if (!state.billingAccessToken) return { status: 401 };
+    let response = await send3();
+    if (response.status === 401 && state.billingRefreshToken) {
+      if (await refreshBillingSession(state, persist)) response = await send3();
+      else if (state.billingRefreshToken) return { status: 503 };
+    }
+    return await response;
+  } catch (diagnosticError9) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.requestAuthenticatedBilling", diagnosticError9);
+    throw diagnosticError9;
+  } finally {
+    diagnosticEnd9();
   }
-  const send3 = () => (0, import_obsidian4.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
-  if (!state.billingAccessToken) return { status: 401 };
-  let response = await send3();
-  if (response.status === 401 && state.billingRefreshToken) {
-    if (await refreshBillingSession(state, persist)) response = await send3();
-    else if (state.billingRefreshToken) return { status: 503 };
-  }
-  return response;
 }
 async function pollAuthenticatedCheckout(adapter, checkoutId) {
-  var _a, _b;
-  if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
-  const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
-    method: "GET",
-    throw: false
+  var _a, _b, _c, _d, _e, _f, _g;
+  const diagnosticEnd11 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.pollAuthenticatedCheckout")) != null ? _c : (() => {
   });
-  return response.status >= 200 && response.status < 300 && ((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.settled) === true;
-}
-async function claimAccountFreeUsage(state, persist, appId, installationId, eventId, amount) {
-  var _a, _b;
-  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
   try {
-    const response = await requestAuthenticatedBilling(state, persist, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+    if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
+    const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
+      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
+      method: "GET",
       throw: false
     });
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    const remaining = Math.max(0, Number((_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.remaining) || 0);
-    new import_obsidian4.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} free credits.`);
-    new import_obsidian4.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} free credits.`);
-    return { kind: "ok", remaining };
-  } catch (error) {
-    console.error("Constance account free-usage claim failed", error);
-    return { kind: "error" };
+    return await (response.status >= 200 && response.status < 300 && ((_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.settled) === true);
+  } catch (diagnosticError11) {
+    (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "constance-account.pollAuthenticatedCheckout", diagnosticError11);
+    throw diagnosticError11;
+  } finally {
+    diagnosticEnd11();
+  }
+}
+async function claimAccountFreeUsage(state, persist, appId, installationId, eventId, amount) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+  const diagnosticEnd13 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.claimAccountFreeUsage")) != null ? _c : (() => {
+  });
+  try {
+    if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+    try {
+      const response = await requestAuthenticatedBilling(state, persist, {
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+        throw: false
+      });
+      if (response.status === 402) return { kind: "insufficient" };
+      if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+      if (response.status < 200 || response.status >= 300) return { kind: "error" };
+      const remaining = Math.max(0, Number((_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.remaining) || 0);
+      new import_obsidian5.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} free credits.`);
+      new import_obsidian5.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} free credits.`);
+      return { kind: "ok", remaining };
+    } catch (error) {
+      diagnostics.failure("constance-account.caught_extra_1", error);
+      (_g = (_f = diagnostics) == null ? void 0 : _f.legacy) == null ? void 0 : _g.call(_f, "error", "constance-account.constance_account_free_usage_claim_failed");
+      return { kind: "error" };
+    }
+  } catch (diagnosticError13) {
+    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "constance-account.claimAccountFreeUsage", diagnosticError13);
+    throw diagnosticError13;
+  } finally {
+    diagnosticEnd13();
   }
 }
 async function spendAccountCredits(state, persist, appId, installationId, eventId, amount) {
-  var _a, _b, _c;
-  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+  const diagnosticEnd14 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.spendAccountCredits")) != null ? _c : (() => {
+  });
   try {
-    const response = await requestAuthenticatedBilling(state, persist, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
-      throw: false
-    });
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    const balance = Number((_c = (_b = (_a = response.json) == null ? void 0 : _a.data) == null ? void 0 : _b.credits) == null ? void 0 : _c.balance);
-    if (!Number.isFinite(balance)) return { kind: "error" };
-    const remaining = Math.max(0, balance);
-    new import_obsidian4.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} purchased credits.`);
-    new import_obsidian4.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} purchased credits.`);
-    return { kind: "ok", balance: remaining };
-  } catch (error) {
-    console.error("Constance authenticated credit spend failed", error);
-    return { kind: "error" };
+    if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
+    try {
+      const response = await requestAuthenticatedBilling(state, persist, {
+        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
+        throw: false
+      });
+      if (response.status === 402) return { kind: "insufficient" };
+      if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
+      if (response.status < 200 || response.status >= 300) return { kind: "error" };
+      const balance = Number((_f = (_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.credits) == null ? void 0 : _f.balance);
+      if (!Number.isFinite(balance)) return { kind: "error" };
+      const remaining = Math.max(0, balance);
+      new import_obsidian5.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} purchased credits.`);
+      new import_obsidian5.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} purchased credits.`);
+      return { kind: "ok", balance: remaining };
+    } catch (error) {
+      diagnostics.failure("constance-account.caught_extra_2", error);
+      (_h = (_g = diagnostics) == null ? void 0 : _g.legacy) == null ? void 0 : _h.call(_g, "error", "constance-account.constance_authenticated_credit_spend_failed");
+      return { kind: "error" };
+    }
+  } catch (diagnosticError14) {
+    (_j = (_i = diagnostics) == null ? void 0 : _i.failure) == null ? void 0 : _j.call(_i, "constance-account.spendAccountCredits", diagnosticError14);
+    throw diagnosticError14;
+  } finally {
+    diagnosticEnd14();
   }
 }
 function addBillingAccountSettings(containerEl, adapter) {
@@ -386,125 +887,252 @@ function addBillingAccountSettings(containerEl, adapter) {
   renderAccountGuidance(section, { appId: adapter.appId, connected: adapter.state.billingAccountLinked && Boolean(adapter.state.billingAccessToken || adapter.state.billingRefreshToken), defaultAllowance: 2e3, unit: "characters", workflow: "Select text or open a Markdown note, then run a Culebra correction command. You can undo the changes." });
   section.createEl("h3", { text: "Account and billing" });
   const state = adapter.state;
-  const numericBalances = Object.entries(state).filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number").map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}: ${Number(value).toLocaleString()}`);
+  const numericBalances = Object.entries(state).filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number").map(([key, value]) => `${key.replace(/^cached/i, "").replace(/^free/i, "Free ").replace(/^purchased/i, "Purchased ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").trim().toLowerCase()}: ${Number(value).toLocaleString()}`);
   const accountStatus = adapter.state.billingAccountLinked ? `Signed in as ${adapter.state.billingEmail || "your account"}` : state.billingRegistrationPending ? `Registered as ${adapter.state.billingEmail} but not signed in. Check your email, click the confirmation link, then sign in here.` : "Not signed in.";
   section.createEl("p", {
     cls: "constance-account-status",
     text: numericBalances.length ? `${accountStatus} Balance \u2014 ${numericBalances.join("; ")}` : accountStatus
   });
   if (!adapter.state.billingAccountLinked) {
-    new import_obsidian4.Setting(section).setName("Email").setDesc("Used to register, sign in, restore purchases, and open checkout.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
-      const journalState = adapter.state;
-      const hasPending = Object.entries(journalState).some(([key, value2]) => /^pending/i.test(key) && key !== "pendingBillingOwnerEmail" && !!value2 && (Array.isArray(value2) ? value2.length > 0 : typeof value2 === "object" ? Object.keys(value2).length > 0 : true));
-      if (hasPending && !journalState.pendingBillingOwnerEmail) journalState.pendingBillingOwnerEmail = adapter.state.billingEmail;
-      if (!hasPending) journalState.pendingBillingOwnerEmail = void 0;
-      adapter.state.billingEmail = value.trim();
-      await adapter.persist();
+    new import_obsidian5.Setting(section).setName("Email").setDesc("Use the email associated with your account and purchases.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
+      return diagnostics.guard("constance-account.control_4", async () => {
+        var _a, _b, _c, _d, _e;
+        const diagnosticEnd15 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "control.email.onChange")) != null ? _c : (() => {
+        });
+        try {
+          const journalState = adapter.state;
+          const hasPending = Object.entries(journalState).some(([key, value2]) => /^pending/i.test(key) && key !== "pendingBillingOwnerEmail" && !!value2 && (Array.isArray(value2) ? value2.length > 0 : typeof value2 === "object" ? Object.keys(value2).length > 0 : true));
+          if (hasPending && !journalState.pendingBillingOwnerEmail) journalState.pendingBillingOwnerEmail = adapter.state.billingEmail;
+          if (!hasPending) journalState.pendingBillingOwnerEmail = void 0;
+          adapter.state.billingEmail = value.trim();
+          await adapter.persist();
+        } catch (diagnosticError15) {
+          (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "control.email.onChange", diagnosticError15);
+          throw diagnosticError15;
+        } finally {
+          diagnosticEnd15();
+        }
+      });
     }));
-    new import_obsidian4.Setting(section).setName("Password").setDesc("Used only for this request. The plugin never saves your password.").addText((text) => {
+    new import_obsidian5.Setting(section).setName("Password").setDesc("Your password is used to sign in and is not saved by the plugin.").addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.maxLength = 256;
       text.setPlaceholder("8 to 128 characters").onChange((value) => {
-        password = value;
+        return diagnostics.guard("constance-account.control_5", () => {
+          var _a;
+          const diagnosticAction16 = () => {
+            password = value;
+          };
+          return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("control.19062.onChange", diagnosticAction16) : diagnosticAction16();
+        });
       });
     });
   }
-  new import_obsidian4.Setting(section).setName("Account").setDesc(accountStatus).addButton((button) => {
+  new import_obsidian5.Setting(section).setName("Account").setDesc(accountStatus).addButton((button) => {
     if (adapter.state.billingAccountLinked) {
       button.buttonEl.remove();
       return;
     }
     button.setButtonText("Connect").setDisabled(adapter.state.billingAccountLinked).onClick(async () => {
-      var _a, _b;
-      button.setDisabled(true);
-      try {
-        await signInBillingAccount(adapter, password, "connect");
-        password = "";
-        new import_obsidian4.Notice(adapter.state.billingRegistrationPending ? "Check your email and follow the verification link, then Connect again." : `Connected as ${adapter.state.billingEmail}.`);
-        (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
-      } catch (error) {
-        new import_obsidian4.Notice(error instanceof Error ? error.message : "Connection failed. Please try again.");
-        (_b = adapter.refresh) == null ? void 0 : _b.call(adapter);
-      } finally {
-        button.setDisabled(adapter.state.billingAccountLinked);
-      }
+      return diagnostics.guard("constance-account.control_6", async () => {
+        var _a, _b, _c, _d, _e, _f, _g;
+        const diagnosticEnd17 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "control.connect.onClick")) != null ? _c : (() => {
+        });
+        try {
+          button.setDisabled(true);
+          try {
+            await signInBillingAccount(adapter, password, "connect");
+            password = "";
+            new import_obsidian5.Notice(adapter.state.billingRegistrationPending ? "Check your email and follow the verification link, then Connect again." : `Connected as ${adapter.state.billingEmail}.`);
+            (_d = adapter.refresh) == null ? void 0 : _d.call(adapter);
+          } catch (error) {
+            diagnostics.failure("constance-account.caught_7", error);
+            new import_obsidian5.Notice(error instanceof Error ? error.message : "Connection failed. Please try again.");
+            (_e = adapter.refresh) == null ? void 0 : _e.call(adapter);
+          } finally {
+            button.setDisabled(adapter.state.billingAccountLinked);
+          }
+        } catch (diagnosticError17) {
+          (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "control.connect.onClick", diagnosticError17);
+          throw diagnosticError17;
+        } finally {
+          diagnosticEnd17();
+        }
+      });
     });
   }).addButton((button) => button.setButtonText("Sign out").setDisabled(!adapter.state.billingAccessToken).onClick(async () => {
-    var _a;
-    const refreshToken = adapter.state.billingRefreshToken;
-    clearBillingSession(adapter.state);
-    state.billingRegistrationPending = false;
-    await adapter.persist();
-    if (refreshToken) void (0, import_obsidian4.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false }).catch(() => {
+    return diagnostics.guard("constance-account.control_8", async () => {
+      var _a, _b, _c, _d, _e, _f;
+      const diagnosticEnd18 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "control.account.onClick")) != null ? _c : (() => {
+      });
+      try {
+        const refreshToken = adapter.state.billingRefreshToken;
+        clearBillingSession(adapter.state);
+        state.billingRegistrationPending = false;
+        await adapter.persist();
+        if (refreshToken) void diagnostics.guard("constance-account.background_9", () => {
+          var _a2, _b2, _c2;
+          return ((_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.addBillingAccountSettings", import_obsidian5.requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })) != null ? _c2 : (0, import_obsidian5.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })).catch((rejectedError1) => {
+            diagnostics.failure("constance-account.rejected_2", rejectedError1);
+          });
+        });
+        new import_obsidian5.Notice("Signed out.");
+        (_d = adapter.refresh) == null ? void 0 : _d.call(adapter);
+      } catch (diagnosticError18) {
+        (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "control.account.onClick", diagnosticError18);
+        throw diagnosticError18;
+      } finally {
+        diagnosticEnd18();
+      }
     });
-    new import_obsidian4.Notice("Signed out.");
-    (_a = adapter.refresh) == null ? void 0 : _a.call(adapter);
   }));
-  if (!adapter.state.billingAccountLinked) new import_obsidian4.Setting(section).setName("Forgot password?").setDesc("Reset your billing account password on Constance.").addButton((button) => button.setButtonText("Open reset page").onClick(() => window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank")));
+  if (!adapter.state.billingAccountLinked) new import_obsidian5.Setting(section).setName("Forgot password?").setDesc("Reset your account password in your browser.").addButton((button) => button.setButtonText("Open reset page").onClick(() => {
+    return diagnostics.guard("constance-account.control_10", () => {
+      var _a;
+      const diagnosticAction19 = () => window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank");
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("control.forgot_password_.onClick", diagnosticAction19) : diagnosticAction19();
+    });
+  }));
   const firstHeading = containerEl.querySelector(":scope > h1, :scope > h2");
   if (firstHeading == null ? void 0 : firstHeading.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
   else containerEl.prepend(section);
   queueMicrotask(() => {
     const candidates = Array.from(containerEl.querySelectorAll(":scope > .setting-item"));
     for (const item of candidates) {
-      const label = item.textContent || "";
-      if (/buy|checkout|refresh balance|sync balance|credit pack/i.test(label)) section.appendChild(item);
+      const label2 = item.textContent || "";
+      if (/buy|checkout|refresh balance|sync balance|credit pack/i.test(label2)) section.appendChild(item);
     }
     for (const summary of Array.from(containerEl.querySelectorAll('[class*="credit"][class*="summary"], [class*="balance"][class*="summary"]'))) {
       if (!section.contains(summary)) section.appendChild(summary);
     }
   });
+  queueMicrotask(() => applySettingsLayout(containerEl, adapter.appId));
 }
 async function showAccountWelcome(plugin, state, persist) {
-  const openSetup = () => {
-    const settings = plugin.app.setting;
-    settings.open();
-    settings.openTabById(plugin.manifest.id);
-  };
-  plugin.addCommand({ id: "open-account-setup", name: "Get started: connect your account", callback: openSetup });
-  const saved = state;
-  if (state.billingAccountLinked || saved.accountWelcomeSeen) return;
-  saved.accountWelcomeSeen = true;
-  await persist();
-  plugin.app.workspace.onLayoutReady(() => {
-    if (state.billingAccountLinked) return;
-    const fragment = document.createDocumentFragment();
-    fragment.append("Culebra: create an account or sign in, then connect to check your free allowance (default: 2,000 AI characters once per account). ");
-    const button = document.createElement("button");
-    button.textContent = "Open account setup";
-    button.addEventListener("click", openSetup);
-    fragment.append(button);
-    new import_obsidian4.Notice(fragment, 12e3);
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd20 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.showAccountWelcome")) != null ? _c : (() => {
   });
+  try {
+    const openSetup = () => {
+      const settings = plugin.app.setting;
+      settings.open();
+      settings.openTabById(plugin.manifest.id);
+    };
+    plugin.addCommand({ id: "open-account-setup", name: "Get started: connect your account", callback: openSetup });
+  } catch (diagnosticError20) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.showAccountWelcome", diagnosticError20);
+    throw diagnosticError20;
+  } finally {
+    diagnosticEnd20();
+  }
+}
+
+// publish/loyalty-discount.ts
+function renderLoyaltyDiscount(root, pricesBelow = true) {
+  const doc = root.ownerDocument;
+  const box = doc.createElement("div");
+  box.className = "loyalty-discount-offer";
+  box.style.cssText = "padding:14px;margin:12px 0;border:1px solid var(--interactive-accent,var(--accent,var(--brand,#6366f1)));border-radius:8px;background:var(--background-secondary,var(--surface,transparent));line-height:1.5";
+  const title = doc.createElement("strong");
+  title.textContent = "Thank you for choosing this app!";
+  const offer = doc.createElement("p");
+  offer.style.margin = "8px 0";
+  offer.append(doc.createTextNode(pricesBelow ? "Get 50% off all prices below with coupon " : "Get 50% off with coupon "));
+  const code = doc.createElement("code");
+  code.textContent = "OBSLOYALE3";
+  offer.append(code, doc.createTextNode("."));
+  const instructions = doc.createElement("p");
+  instructions.style.margin = "8px 0";
+  instructions.textContent = "On the payment page, click Add discount on the left and enter the coupon code.";
+  const validity = doc.createElement("p");
+  validity.style.margin = "8px 0";
+  validity.textContent = "Valid until the end of this quarter.";
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.textContent = "Copy code";
+  const status = doc.createElement("span");
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.style.marginLeft = "8px";
+  button.addEventListener("click", async () => {
+    var _a, _b;
+    try {
+      await ((_a = doc.defaultView) == null ? void 0 : _a.navigator.clipboard.writeText("OBSLOYALE3"));
+      if (!((_b = doc.defaultView) == null ? void 0 : _b.navigator.clipboard)) throw new Error("Clipboard unavailable");
+      status.textContent = "Code copied.";
+    } catch (error) {
+      const focused = doc.activeElement;
+      const field = doc.createElement("textarea");
+      field.value = "OBSLOYALE3";
+      field.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+      doc.body.appendChild(field);
+      field.select();
+      let copied = false;
+      try {
+        copied = doc.execCommand("copy");
+      } catch (copyError) {
+        console.error("Coupon copy failed", copyError);
+      } finally {
+        field.remove();
+        if (focused instanceof HTMLElement) focused.focus();
+      }
+      status.textContent = copied ? "Code copied." : "Select and copy OBSLOYALE3 manually.";
+    }
+  });
+  box.append(title, offer, instructions, validity, button, status);
+  root.appendChild(box);
+  return box;
 }
 
 // publish/billing-catalog.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var BASE = "https://app.tutivsoft.com/api/v1";
 async function send2(host, path, body, idempotencyKey) {
-  var _a, _b, _c, _d;
-  if (!host.state.billingAccessToken && host.state.billingRefreshToken) {
-    await refreshBillingSession(host.state, host.persist);
-  }
-  const request = () => (0, import_obsidian5.requestUrl)({
-    url: `${BASE}${path}`,
-    method: body ? "POST" : "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...host.state.billingAccessToken ? { Authorization: `Bearer ${host.state.billingAccessToken}` } : {},
-      ...idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
-    },
-    ...body ? { body: JSON.stringify(body) } : {},
-    throw: false
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-catalog.send")) != null ? _c : (() => {
   });
-  let response = await request();
-  if (response.status === 401 && host.state.billingRefreshToken && await refreshBillingSession(host.state, host.persist)) {
-    response = await request();
+  try {
+    if (!host.state.billingAccessToken && host.state.billingRefreshToken) {
+      await refreshBillingSession(host.state, host.persist);
+    }
+    const request = () => {
+      var _a2, _b2, _c2;
+      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.billing-catalog.send", import_obsidian6.requestUrl, {
+        url: `${BASE}${path}`,
+        method: body ? "POST" : "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...host.state.billingAccessToken ? { Authorization: `Bearer ${host.state.billingAccessToken}` } : {},
+          ...idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
+        },
+        ...body ? { body: JSON.stringify(body) } : {},
+        throw: false
+      })) != null ? _c2 : (0, import_obsidian6.requestUrl)({
+        url: `${BASE}${path}`,
+        method: body ? "POST" : "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...host.state.billingAccessToken ? { Authorization: `Bearer ${host.state.billingAccessToken}` } : {},
+          ...idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
+        },
+        ...body ? { body: JSON.stringify(body) } : {},
+        throw: false
+      });
+    };
+    let response = await request();
+    if (response.status === 401 && host.state.billingRefreshToken && await refreshBillingSession(host.state, host.persist)) {
+      response = await request();
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(((_e = (_d = response.json) == null ? void 0 : _d.detail) == null ? void 0 : _e.message) || (typeof ((_f = response.json) == null ? void 0 : _f.detail) === "string" ? response.json.detail : `Billing is temporarily unavailable. Try again shortly.`));
+    }
+    return await ((_g = response.json) == null ? void 0 : _g.data);
+  } catch (diagnosticError1) {
+    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "billing-catalog.send", diagnosticError1);
+    throw diagnosticError1;
+  } finally {
+    diagnosticEnd1();
   }
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(((_b = (_a = response.json) == null ? void 0 : _a.detail) == null ? void 0 : _b.message) || (typeof ((_c = response.json) == null ? void 0 : _c.detail) === "string" ? response.json.detail : `Billing service unavailable (HTTP ${response.status}).`));
-  }
-  return (_d = response.json) == null ? void 0 : _d.data;
 }
 function joinPublicPacks(products, appId) {
   if ((products == null ? void 0 : products.app_id) !== appId || !Array.isArray(products == null ? void 0 : products.packs)) return [];
@@ -520,65 +1148,81 @@ function joinPublicPacks(products, appId) {
 function addLivePacks(root, host) {
   var _a;
   (_a = host.resumeCheckout) == null ? void 0 : _a.call(host);
-  const section = root.createDiv();
-  const status = section.createEl("p", { text: "Loading current Paddle prices\u2026" });
-  void send2(host, `/billing/public-products?app_id=${encodeURIComponent(host.appId)}`).then((products) => {
+  const section = root.createDiv({ cls: "ui-billing-packs" });
+  renderLoyaltyDiscount(section);
+  const status = section.createEl("p", { text: "Loading prices\u2026" });
+  void diagnostics.guard("billing-catalog.background_1", () => send2(host, `/billing/public-products?app_id=${encodeURIComponent(host.appId)}`).then((products) => {
     const offers = joinPublicPacks(products, host.appId);
-    if (!offers.length) throw new Error("No current one-time offers are available.");
-    status.setText("Current provider pricing. Final checkout calculates applicable tax.");
+    if (!offers.length) throw new Error("No credit packs are currently available.");
+    status.setText("Applicable taxes are calculated at checkout.");
     for (const { pack, priceId, units, unit, amount, available } of offers) {
       const description = [pack == null ? void 0 : pack.description, Number.isSafeInteger(units) && units > 0 ? `${units.toLocaleString()} ${unit}` : "", available ? "" : (pack == null ? void 0 : pack.availability_reason) || "Current price unavailable"].filter(Boolean).join(" \xB7 ");
-      const row = new import_obsidian5.Setting(section).setName(pack.price_name || pack.name || pack.code || "One-time offer").setDesc(description);
+      const row = new import_obsidian6.Setting(section).setName(pack.price_name || pack.name || pack.code || "Credit pack").setDesc(description);
       row.addButton((button) => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available).onClick(async () => {
-        var _a2, _b, _c;
-        button.setDisabled(true);
-        try {
-          if (!host.state.billingAccountLinked) throw new Error("Connect your billing account before buying credits.");
-          let pending = host.state.previewPendingCheckout;
-          if ((pending == null ? void 0 : pending.owner) && pending.owner !== host.state.billingEmail) throw new Error("Sign in to the account owning the pending purchase.");
-          if (pending == null ? void 0 : pending.checkout_id) {
-            const checkout2 = await send2(host, `/billing/checkouts/${encodeURIComponent(pending.checkout_id)}`);
-            if (checkout2.settled === true || ["completed", "fulfilled", "canceled", "cancelled", "failed", "expired", "voided", "rejected"].includes(checkout2.status)) {
-              host.state.previewPendingCheckout = void 0;
+        return diagnostics.guard("billing-catalog.control_2", async () => {
+          var _a2, _b, _c, _d, _e, _f, _g, _h;
+          const diagnosticEnd2 = (_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b.call(_a2, "control.3426.onClick")) != null ? _c : (() => {
+          });
+          try {
+            button.setDisabled(true);
+            try {
+              if (!host.state.billingAccountLinked) throw new Error("Connect your account before buying credits.");
+              let pending = host.state.previewPendingCheckout;
+              if ((pending == null ? void 0 : pending.owner) && pending.owner !== host.state.billingEmail) throw new Error("Sign in to the account owning the pending purchase.");
+              if (pending == null ? void 0 : pending.checkout_id) {
+                const checkout2 = await send2(host, `/billing/checkouts/${encodeURIComponent(pending.checkout_id)}`);
+                if (checkout2.settled === true || ["completed", "fulfilled", "canceled", "cancelled", "failed", "expired", "voided", "rejected"].includes(checkout2.status)) {
+                  host.state.previewPendingCheckout = void 0;
+                  await host.persist();
+                  await ((_d = host.syncBalance) == null ? void 0 : _d.call(host));
+                  return;
+                }
+              }
+              if ((pending == null ? void 0 : pending.price_id) && pending.price_id !== priceId) throw new Error("A purchase is pending. Resolve its status before another purchase.");
+              const legacyPlan = pending && !pending.price_id ? pending.plan_code : void 0;
+              const request = pending || { price_id: priceId, idempotency_key: `checkout_${crypto.randomUUID()}`, owner: host.state.billingEmail };
+              host.state.previewPendingCheckout = request;
               await host.persist();
-              await ((_a2 = host.syncBalance) == null ? void 0 : _a2.call(host));
-              return;
+              const oldCheckout = !!legacyPlan;
+              const checkout = await send2(host, `/billing/${oldCheckout ? "checkout" : "checkout-price"}`, {
+                app_id: host.appId,
+                installation_id: host.installationId,
+                ...oldCheckout ? { plan_code: legacyPlan } : { price_id: request.price_id },
+                quantity: 1
+              }, request.idempotency_key);
+              if (!(checkout == null ? void 0 : checkout.checkout_id)) throw new Error("Checkout is still being confirmed; retry the same purchase to recover it safely.");
+              request.checkout_id = String(checkout.checkout_id);
+              await host.persist();
+              await ((_e = host.syncBalance) == null ? void 0 : _e.call(host));
+              (_f = host.resumeCheckout) == null ? void 0 : _f.call(host);
+              if (typeof checkout.checkout_url === "string" && checkout.checkout_url) window.open(checkout.checkout_url, "_blank", "noopener");
+              else new import_obsidian6.Notice("Checkout is still being confirmed. Its status will refresh when you return.");
+            } catch (error) {
+              diagnostics.failure("billing-catalog.caught_3", error);
+              new import_obsidian6.Notice(error instanceof Error ? error.message : "Checkout unavailable.");
+            } finally {
+              button.setDisabled(!available);
             }
+          } catch (diagnosticError2) {
+            (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "control.3426.onClick", diagnosticError2);
+            throw diagnosticError2;
+          } finally {
+            diagnosticEnd2();
           }
-          if ((pending == null ? void 0 : pending.price_id) && pending.price_id !== priceId) throw new Error("A purchase is pending. Resolve its status before another purchase.");
-          const legacyPlan = pending && !pending.price_id ? pending.plan_code : void 0;
-          const request = pending || { price_id: priceId, idempotency_key: `checkout_${crypto.randomUUID()}`, owner: host.state.billingEmail };
-          host.state.previewPendingCheckout = request;
-          await host.persist();
-          const oldCheckout = !!legacyPlan;
-          const checkout = await send2(host, `/billing/${oldCheckout ? "checkout" : "checkout-price"}`, {
-            app_id: host.appId,
-            installation_id: host.installationId,
-            ...oldCheckout ? { plan_code: legacyPlan } : { price_id: request.price_id },
-            quantity: 1
-          }, request.idempotency_key);
-          if (!(checkout == null ? void 0 : checkout.checkout_id)) throw new Error("Checkout is still being confirmed; retry the same purchase to recover it safely.");
-          request.checkout_id = String(checkout.checkout_id);
-          await host.persist();
-          await ((_b = host.syncBalance) == null ? void 0 : _b.call(host));
-          (_c = host.resumeCheckout) == null ? void 0 : _c.call(host);
-          if (typeof checkout.checkout_url === "string" && checkout.checkout_url) window.open(checkout.checkout_url, "_blank", "noopener");
-          else new import_obsidian5.Notice("Checkout is still being confirmed. Its status will refresh when you return.");
-        } catch (error) {
-          new import_obsidian5.Notice(error instanceof Error ? error.message : "Checkout unavailable.");
-        } finally {
-          button.setDisabled(!available);
-        }
+        });
       }));
     }
-  }).catch(() => status.setText("Pricing temporarily unavailable. Refresh before buying."));
+  }).catch((rejectedError1) => {
+    diagnostics.failure("billing-catalog.rejected_2", rejectedError1);
+    return status.setText("Pricing temporarily unavailable. Refresh before buying.");
+  }));
 }
 
 // publish/main.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // publish/plugin-support.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var SAFE_DETAIL_KEYS = /* @__PURE__ */ new Set([
   "version",
   "operation",
@@ -600,6 +1244,7 @@ var SAFE_DETAIL_KEYS = /* @__PURE__ */ new Set([
   "cancelled",
   "line",
   "column",
+  "span",
   "settingCount",
   "attempt",
   "attempts",
@@ -619,41 +1264,77 @@ function safeString(value) {
   }
   return "[omitted]";
 }
+function isError2(value) {
+  return value instanceof Error || Object.prototype.toString.call(value) === "[object Error]";
+}
 function safeDetail(value) {
-  if (value instanceof Error) return JSON.stringify({ errorType: safeString(value.name || "Error") });
+  if (isError2(value)) {
+    const status = value.httpStatus;
+    return JSON.stringify({ errorType: safeString(value.name || "Error"), ...typeof status === "number" && Number.isFinite(status) ? { httpStatus: status } : {} });
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) return "[detail omitted]";
   const safe = {};
   for (const [key, item] of Object.entries(value)) {
     if (!SAFE_DETAIL_KEYS.has(key)) continue;
-    if (typeof item === "string") safe[key] = safeString(item);
-    else if (typeof item === "number" && Number.isFinite(item)) safe[key] = item;
+    if (typeof item === "string") {
+      if (key === "version" && /^\d+\.\d+\.\d+$/.test(item)) safe[key] = item;
+      else if (key === "errorType") safe[key] = ["Error", "TypeError", "RangeError", "SyntaxError", "AbortError"].includes(item) ? item : "Error";
+      else if (key === "outcome" && ["failed", "cancelled", "completed"].includes(item)) safe[key] = item;
+    } else if (typeof item === "number" && Number.isFinite(item)) safe[key] = item;
     else if (typeof item === "boolean" || item === null) safe[key] = item;
   }
   return JSON.stringify(safe);
 }
-function safeErrorType(error) {
-  if (error instanceof Error) return safeString(error.name || "Error");
-  return safeString(typeof error);
-}
-var DocumentationModal = class extends import_obsidian6.Modal {
-  constructor(app, docs) {
+var DocumentationModal = class extends import_obsidian7.Modal {
+  constructor(app, docs, plugin, welcome = false) {
     super(app);
     this.docs = docs;
+    this.plugin = plugin;
+    this.welcome = welcome;
   }
   onOpen() {
-    this.titleEl.setText(this.docs.name + " documentation");
-    this.contentEl.createEl("p", { text: this.docs.summary });
-    const addSection = (title, items) => {
-      this.contentEl.createEl("h3", { text: title });
-      const list = this.contentEl.createEl("ol");
-      for (const item of items) list.createEl("li", { text: item });
-    };
-    addSection("Quick start", this.docs.quickStart);
-    addSection("Useful commands", Array.from(/* @__PURE__ */ new Set([...this.docs.commands, "Copy full debug log"])));
-    addSection("Troubleshooting", this.docs.troubleshooting);
+    return diagnostics.guard("plugin-support.onOpen_1", () => {
+      this.titleEl.setText(this.welcome ? "Welcome to " + this.docs.name : this.docs.name + " Help");
+      this.contentEl.createEl("p", { text: this.docs.summary });
+      const steps = this.contentEl.createEl("ol");
+      ["Open Account to sign in or create an account. Verify your email if prompted.", "Select text in an editable Markdown note. With no selection, the current note is corrected.", "Review the result. Use Undo or the available recovery options if needed."].forEach((text) => steps.createEl("li", { text }));
+      const settings = () => {
+        var _a;
+        const target = this.app.setting;
+        target == null ? void 0 : target.open();
+        target == null ? void 0 : target.openTabById((_a = this.plugin) == null ? void 0 : _a.manifest.id);
+        this.close();
+      };
+      new import_obsidian7.Setting(this.contentEl).addButton((button) => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings))).addButton((button) => button.setButtonText("Correct selected text").onClick(() => {
+        return diagnostics.guard("plugin-support.control_3", () => {
+          var _a, _b;
+          const commands = this.app.commands;
+          const id = ((_a = this.plugin) == null ? void 0 : _a.manifest.id) + ":spell-correct";
+          const available = (_b = commands == null ? void 0 : commands.executeCommandById) == null ? void 0 : _b.call(commands, id);
+          if (available === false || !(commands == null ? void 0 : commands.executeCommandById)) new import_obsidian7.Notice("Open the command palette and choose " + this.docs.name + ". Check the selected note or attachment first.");
+          this.close();
+        });
+      }));
+      const section = (title, items) => {
+        const details = this.contentEl.createEl("details");
+        details.createEl("summary", { text: title });
+        const list = details.createEl("ul");
+        items.forEach((text) => list.createEl("li", { text }));
+        return details;
+      };
+      const problems = section("Common problems", ["Email not received? Check spam, confirm the address in Account, then use Connect again after verification. Use the account page for recovery; do not create another account to recover purchases.", ...this.docs.troubleshooting]);
+      new import_obsidian7.Setting(problems).addButton((button) => button.setButtonText("Open account").onClick(diagnostics.wrap("plugin-support.control_4", settings)));
+      problems.createEl("a", { text: "Forgot password?", href: "https://app.tutivsoft.com/password-reset", attr: { target: "_blank", rel: "noopener noreferrer" } });
+      section("Account and purchases", ["Your remaining free allowance and purchases belong to your account. Your credit balance stays with your account after reinstalling. Current prices are shown in Account. Refresh balance after a delayed payment instead of purchasing again."]);
+      section("Advanced settings \u2014 optional", ["Simple shows everyday controls. Open Settings and choose Advanced for more customization and troubleshooting. Switching views keeps saved preferences."]);
+      section("Useful commands", Array.from(/* @__PURE__ */ new Set([...this.docs.commands, "Open documentation", "Copy diagnostic log"])));
+      section("Removing the app", ["Removing this plugin does not undo edits or delete your account. Export anything you want to keep before removing it in Obsidian Settings \u2192 Community plugins. Reconnect the same account after reinstalling to restore its remaining allowance and purchases."]);
+    });
   }
   onClose() {
-    this.contentEl.empty();
+    return diagnostics.guard("plugin-support.onClose_5", () => {
+      this.contentEl.empty();
+    });
   }
 };
 var PluginSupport = class {
@@ -664,32 +1345,71 @@ var PluginSupport = class {
     this.maxEntries = 1e3;
     this.droppedEntries = 0;
     this.started = false;
+    this.lastFailureNotice = 0;
+    this.knownCommands = /* @__PURE__ */ new Set(["toggle-debug-logging", "open-documentation", "copy-debug-log", "open-plugin-settings", "open-account-setup", "spell-correct", "show-ai-request-queue"]);
+    this.repetitions = /* @__PURE__ */ new Map();
+    diagnostics.attach(this, () => this.debugEnabled());
+    this.plugin.register(() => diagnostics.guard("plugin-support.event_6", () => diagnostics.detach(this)));
+  }
+  debugEnabled() {
+    var _a;
+    return ((_a = this.plugin.settings) == null ? void 0 : _a.debugLogging) === true;
+  }
+  addDebugSetting(containerEl) {
+    const renderEnd = diagnostics.start("settings.render.debug_logging");
+    try {
+      new import_obsidian7.Setting(containerEl).setName("Debug logging").setDesc("Record detailed activity logs for troubleshooting. Off by default.").addToggle((toggle) => toggle.setValue(this.debugEnabled()).onChange((value) => diagnostics.guard("plugin-support.control_7", () => this.setDebugLogging(value))));
+    } finally {
+      renderEnd();
+    }
+  }
+  async setDebugLogging(value) {
+    const host = this.plugin;
+    const previous = host.settings.debugLogging;
+    host.settings.debugLogging = value;
+    const end = diagnostics.start("settings.debug_logging.callback");
+    try {
+      if (host.persist) await host.persist();
+      else if (host.saveSettings) await host.saveSettings();
+      else await host.saveData(host.settings);
+    } catch (error) {
+      diagnostics.failure("settings.debug_logging.callback", error);
+      host.settings.debugLogging = previous;
+      throw error;
+    } finally {
+      end();
+    }
   }
   start() {
     if (this.started) return;
     this.started = true;
     this.info("plugin.loaded", { version: this.plugin.manifest.version });
     this.plugin.registerDomEvent(window, "error", (event) => {
-      const error = event.error;
-      this.error("runtime.error", {
-        errorType: error instanceof Error ? error.name : "ErrorEvent",
-        line: event.lineno,
-        column: event.colno
+      return diagnostics.guard("plugin-support.event_8", () => {
+        var _a;
+        const source = event.filename || ((_a = event.error) == null ? void 0 : _a.stack) || "";
+        if (source && !source.includes("plugin:" + this.plugin.manifest.id)) return;
+        this.error("runtime.error", event.error || new Error(event.message || "Uncaught runtime error"));
       });
     });
     this.plugin.registerDomEvent(window, "unhandledrejection", (event) => {
-      this.error("runtime.unhandled_rejection", { errorType: safeErrorType(event.reason) });
+      return diagnostics.guard("plugin-support.event_9", () => {
+        var _a;
+        const source = ((_a = event.reason) == null ? void 0 : _a.stack) || "";
+        if (source && !source.includes("plugin:" + this.plugin.manifest.id)) return;
+        diagnostics.failure("runtime.unhandled_rejection", event.reason);
+      });
     });
     const addCommand = this.plugin.addCommand.bind(this.plugin);
     const registerCommand = (command) => addCommand(this.instrumentCommand(command));
     registerCommand({
       id: "open-documentation",
       name: "Open documentation",
-      callback: () => new DocumentationModal(this.plugin.app, this.docs).open()
+      callback: () => new DocumentationModal(this.plugin.app, this.docs, this.plugin).open()
     });
     registerCommand({
       id: "copy-debug-log",
-      name: "Copy full debug log",
+      name: "Copy diagnostic log",
       callback: () => this.copyDiagnostics()
     });
     registerCommand({
@@ -701,7 +1421,47 @@ var PluginSupport = class {
         setting == null ? void 0 : setting.openTabById(this.plugin.manifest.id);
       }
     });
+    registerCommand({
+      id: "toggle-debug-logging",
+      name: "Toggle debug logging",
+      callback: async () => {
+        try {
+          await this.setDebugLogging(!this.debugEnabled());
+          new import_obsidian7.Notice(this.docs.name + ": debug logging " + (this.debugEnabled() ? "enabled." : "disabled."));
+        } catch (caughtError10) {
+          diagnostics.failure("plugin-support.caught_11", caughtError10);
+          new import_obsidian7.Notice(this.docs.name + ": could not save the logging setting. Try again.");
+        }
+      }
+    });
     this.instrumentFutureCommands(addCommand);
+  }
+  /** Called after settings and first-action commands have loaded, including on a ready workspace. */
+  showWelcome() {
+    this.plugin.app.workspace.onLayoutReady(() => {
+      return diagnostics.guard("plugin-support.event_12", () => {
+        var _a;
+        const host = this.plugin;
+        const state = ((_a = host.settings) == null ? void 0 : _a.billing) || host.settings;
+        if (!this.automaticWindowsEnabled() || !state || state.billingAccountLinked || state.flowWelcomeSeen || state.accountWelcomeSeen || state.billingOnboardingSeen || state.onboardingShown || host.settings.onboardingShown) return;
+        const persist = host.persist ? () => host.persist() : host.saveSettings ? () => host.saveSettings() : () => this.plugin.saveData(host.settings);
+        state.flowWelcomeSeen = true;
+        void diagnostics.guard("plugin-support.background_13", () => persist().then(() => new DocumentationModal(this.plugin.app, this.docs, this.plugin, true).open()).catch((rejectedError1) => {
+          diagnostics.failure("plugin-support.rejected_2", rejectedError1);
+          state.flowWelcomeSeen = false;
+          new import_obsidian7.Notice("Could not save setup progress. Your existing data is unchanged; reopen Help to continue.");
+        }));
+      });
+    });
+  }
+  notifyFailure(_stage) {
+    const now = Date.now();
+    if (now - this.lastFailureNotice < 5e3) return;
+    this.lastFailureNotice = now;
+    try {
+      new import_obsidian7.Notice(this.docs.name + ": this action could not be completed. Try again or copy the diagnostic log for support.");
+    } catch (caughtError14) {
+    }
   }
   info(event, detail) {
     this.record("info", event, detail);
@@ -712,9 +1472,32 @@ var PluginSupport = class {
   error(event, detail) {
     this.record("error", event, detail);
   }
+  automaticWindowsEnabled() {
+    var _a;
+    return ((_a = this.plugin.settings) == null ? void 0 : _a.autoShowOperationWindows) === true;
+  }
+  addHelpSetting(containerEl) {
+    new import_obsidian7.Setting(containerEl).setName("Show automatic windows").setDesc("Open queue, progress, result, and welcome windows automatically. Off by default; status messages remain visible.").addToggle((toggle) => toggle.setValue(this.automaticWindowsEnabled()).onChange(async (enabled2) => {
+      const host = this.plugin;
+      const previous = host.settings.autoShowOperationWindows;
+      host.settings.autoShowOperationWindows = enabled2;
+      try {
+        if (host.persist) await host.persist();
+        else if (host.saveSettings) await host.saveSettings();
+        else await host.saveData(host.settings);
+      } catch (error) {
+        host.settings.autoShowOperationWindows = previous;
+        toggle.setValue(this.automaticWindowsEnabled());
+        new import_obsidian7.Notice("Could not save the automatic windows preference. Try again.");
+      }
+    }));
+    new import_obsidian7.Setting(containerEl).setName("Help").setDesc("Get started, recover your account, or remove the plugin.").addButton((button) => button.setButtonText("Open Help").onClick(() => diagnostics.guard("plugin-support.control_16", () => new DocumentationModal(this.plugin.app, this.docs, this.plugin).open())));
+  }
   addDiagnosticsSetting(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Diagnostics").setDesc("Copy up to the latest 1,000 events recorded by this plugin. Logs reset when the plugin reloads. Note contents, paths, credentials, and raw error messages are excluded.").addButton((button) => button.setButtonText("Copy full log").onClick(() => {
-      void this.copyDiagnostics();
+    new import_obsidian7.Setting(containerEl).setName("Diagnostics").setDesc("Copy up to the latest 1,000 events recorded by this plugin. Logs reset when the plugin reloads. Note contents, paths, credentials, and raw error messages are excluded.").addButton((button) => button.setButtonText("Copy full log").onClick(() => {
+      return diagnostics.guard("plugin-support.control_17", () => {
+        void diagnostics.guard("plugin-support.background_18", () => this.copyDiagnostics());
+      });
     }));
   }
   instrumentFutureCommands(addCommand) {
@@ -725,8 +1508,10 @@ var PluginSupport = class {
       value: (command) => addCommand(this.instrumentCommand(command))
     });
     this.plugin.register(() => {
-      if (originalDescriptor) Object.defineProperty(this.plugin, "addCommand", originalDescriptor);
-      else Reflect.deleteProperty(this.plugin, "addCommand");
+      return diagnostics.guard("plugin-support.event_19", () => {
+        if (originalDescriptor) Object.defineProperty(this.plugin, "addCommand", originalDescriptor);
+        else Reflect.deleteProperty(this.plugin, "addCommand");
+      });
     });
   }
   instrumentCommand(command) {
@@ -735,36 +1520,28 @@ var PluginSupport = class {
       ...command,
       callback: command.callback ? instrument(command.callback) : void 0,
       editorCallback: command.editorCallback ? instrument(command.editorCallback) : void 0,
-      checkCallback: command.checkCallback ? (checking) => checking ? command.checkCallback(checking) : this.trackCommand(command.id, () => command.checkCallback(checking)) : void 0,
-      editorCheckCallback: command.editorCheckCallback ? (checking, editor, context) => checking ? command.editorCheckCallback(checking, editor, context) : this.trackCommand(command.id, () => command.editorCheckCallback(checking, editor, context)) : void 0
+      checkCallback: command.checkCallback ? (checking) => this.trackCommand(command.id, () => command.checkCallback(checking)) : void 0,
+      editorCheckCallback: command.editorCheckCallback ? (checking, editor, context) => this.trackCommand(command.id, () => command.editorCheckCallback(checking, editor, context)) : void 0
     };
   }
   trackCommand(commandId, action) {
-    const startedAt = Date.now();
-    this.info("command.started", { operation: commandId });
-    try {
-      const result = action();
-      if (result && typeof result.then === "function") {
-        return Promise.resolve(result).then(
-          (value) => {
-            this.info("command.completed", { operation: commandId, durationMs: Date.now() - startedAt });
-            return value;
-          },
-          (error) => {
-            this.error("command.failed", { operation: commandId, errorType: safeErrorType(error), durationMs: Date.now() - startedAt });
-            throw error;
-          }
-        );
-      }
-      this.info("command.completed", { operation: commandId, durationMs: Date.now() - startedAt });
-      return result;
-    } catch (error) {
-      this.error("command.failed", { operation: commandId, errorType: safeErrorType(error), durationMs: Date.now() - startedAt });
-      throw error;
-    }
+    const stage = "command." + (this.knownCommands.has(commandId) ? commandId : "custom");
+    return diagnostics.guard(stage, () => diagnostics.run(stage, action), false);
   }
   record(level, event, detail) {
-    var _a;
+    var _a, _b;
+    const admittedEnd = event.endsWith(".end") && typeof (detail == null ? void 0 : detail.span) === "number";
+    if (level === "info" && !this.debugEnabled() && !admittedEnd) return;
+    const now = Date.now();
+    const repeatKey = level + ":" + event;
+    const previous = this.repetitions.get(repeatKey);
+    if (!event.endsWith(".start") && !event.endsWith(".end") && previous && now - previous.at < 1e3) {
+      previous.count++;
+      if (previous.count > 4) return;
+    } else {
+      if (this.repetitions.size >= 512) this.repetitions.delete(this.repetitions.keys().next().value);
+      this.repetitions.set(repeatKey, { at: now, count: 1 });
+    }
     const safeEvent = /^[a-z0-9][a-z0-9._-]{0,99}$/i.test(event) ? event : "invalid_event";
     const entry = { at: (/* @__PURE__ */ new Date()).toISOString(), level, event: safeEvent };
     if (detail !== void 0) entry.detail = safeDetail(detail);
@@ -775,7 +1552,12 @@ var PluginSupport = class {
       this.droppedEntries += removed;
     }
     const method = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
-    method.call(console, "[" + this.docs.name + "] " + entry.event, (_a = entry.detail) != null ? _a : "");
+    try {
+      const prefix = "[" + this.docs.name + " v" + this.plugin.manifest.version + "] " + entry.event;
+      if (isError2(detail)) method.call(console, prefix, (_a = entry.detail) != null ? _a : "", detail);
+      else method.call(console, prefix, (_b = entry.detail) != null ? _b : "");
+    } catch (caughtError20) {
+    }
   }
   async copyDiagnostics() {
     this.info("diagnostics.copy_requested", { total: this.entries.length + 1 });
@@ -800,20 +1582,22 @@ var PluginSupport = class {
       await navigator.clipboard.writeText(text);
       this.info("diagnostics.copy_succeeded", { total: snapshot.length });
       const omitted = this.droppedEntries ? "; " + this.droppedEntries + " older events omitted" : "";
-      new import_obsidian6.Notice(this.docs.name + ": copied " + snapshot.length + " log events" + omitted + ".");
+      new import_obsidian7.Notice(this.docs.name + ": copied " + snapshot.length + " log events" + omitted + ".");
     } catch (error) {
-      this.error("diagnostics.copy_failed", { errorType: safeErrorType(error) });
-      new import_obsidian6.Notice(this.docs.name + ": could not copy the debug log.");
+      diagnostics.failure("plugin-support.caught_22", error);
+      this.error("diagnostics.copy_failed", error);
+      new import_obsidian7.Notice(this.docs.name + ": could not copy the debug log.");
     }
   }
 };
 
 // publish/ai-request-queue.ts
-var import_obsidian7 = require("obsidian");
-var AiRequestQueue = class extends import_obsidian7.Modal {
-  constructor(app, appName) {
+var import_obsidian8 = require("obsidian");
+var AiRequestQueue = class extends import_obsidian8.Modal {
+  constructor(app, appName, shouldAutoOpen = () => false) {
     super(app);
     this.appName = appName;
+    this.shouldAutoOpen = shouldAutoOpen;
     this.pending = [];
     this.active = null;
     this.running = false;
@@ -823,75 +1607,103 @@ var AiRequestQueue = class extends import_obsidian7.Modal {
     this.lastCompletion = "";
   }
   onOpen() {
-    this.opened = true;
-    this.startTimer();
-    this.render();
+    return diagnostics.guard("ai-request-queue.onOpen_1", () => {
+      var _a;
+      const diagnosticAction1 = () => {
+        this.opened = true;
+        this.startTimer();
+        this.render();
+      };
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("ai-request-queue.onOpen", diagnosticAction1) : diagnosticAction1();
+    });
   }
   onClose() {
-    this.opened = false;
-    if (this.timer !== null) window.clearInterval(this.timer);
-    this.timer = null;
-    this.contentEl.empty();
-  }
-  enqueue(label, submittedText, run) {
-    return new Promise((resolve) => {
-      const job = {
-        id: this.nextId++,
-        label,
-        submittedText,
-        queuedAt: Date.now(),
-        statusLabel: "Waiting",
-        run,
-        resolve
+    return diagnostics.guard("ai-request-queue.onClose_2", () => {
+      var _a;
+      const diagnosticAction2 = () => {
+        this.opened = false;
+        if (this.timer !== null) window.clearInterval(this.timer);
+        this.timer = null;
+        this.contentEl.empty();
       };
-      this.pending.push(job);
-      if (!this.opened) this.open();
-      this.render();
-      void this.drain();
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("ai-request-queue.onClose", diagnosticAction2) : diagnosticAction2();
     });
+  }
+  enqueue(label2, submittedText, run) {
+    var _a;
+    const diagnosticAction3 = () => {
+      return new Promise((resolve) => {
+        const job = {
+          id: this.nextId++,
+          label: label2,
+          submittedText,
+          queuedAt: Date.now(),
+          statusLabel: "Waiting",
+          run,
+          resolve
+        };
+        this.pending.push(job);
+        if (!this.opened && this.shouldAutoOpen()) this.open();
+        if (!this.opened) new import_obsidian8.Notice(`${this.appName}: ${label2}${this.running ? " queued" : " started"}.`);
+        this.render();
+        void diagnostics.guard("ai-request-queue.background_3", () => this.drain());
+      });
+    };
+    return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("ai-request-queue.enqueue", diagnosticAction3) : diagnosticAction3();
   }
   startTimer() {
     if (this.timer !== null) window.clearInterval(this.timer);
-    this.timer = window.setInterval(() => this.render(), 1e3);
+    this.timer = window.setInterval(() => diagnostics.guard("ai-request-queue.timer_4", () => this.render()), 1e3);
   }
   async drain() {
-    if (this.running) return;
-    this.running = true;
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd4 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "ai-request-queue.drain")) != null ? _c : (() => {
+    });
     try {
-      while (this.pending.length) {
-        const job = this.pending.shift();
-        this.active = job;
-        job.startedAt = Date.now();
-        job.statusLabel = "Preparing request";
-        this.render();
-        const report = (update) => {
-          var _a;
-          if (((_a = this.active) == null ? void 0 : _a.id) !== job.id) return;
-          if (update.label !== void 0) job.statusLabel = update.label;
-          if (update.submittedText !== void 0) job.submittedText = update.submittedText;
-          if (update.current !== void 0) job.current = update.current;
-          if (update.total !== void 0) job.total = update.total;
+      if (this.running) return;
+      this.running = true;
+      try {
+        while (this.pending.length) {
+          const job = this.pending.shift();
+          this.active = job;
+          job.startedAt = Date.now();
+          job.statusLabel = "Preparing request";
           this.render();
-        };
-        try {
-          const value = await job.run(report);
-          const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
-          this.lastCompletion = `${job.label} completed in ${elapsed} second${elapsed === 1 ? "" : "s"}.`;
-          new import_obsidian7.Notice(`${this.appName}: ${this.lastCompletion}`, 4e3);
-          job.resolve({ status: "completed", value });
-        } catch (error) {
-          const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
-          const detail = error instanceof Error ? error.message : "Unknown error";
-          this.lastCompletion = `${job.label} failed after ${elapsed} second${elapsed === 1 ? "" : "s"}: ${detail}`;
-          new import_obsidian7.Notice(`${this.appName}: ${job.label} failed. ${detail}`, 6e3);
-          job.resolve({ status: "failed", error });
-        } finally {
-          this.active = null;
-          this.render();
+          const report2 = (update) => {
+            var _a2;
+            if (((_a2 = this.active) == null ? void 0 : _a2.id) !== job.id) return;
+            if (update.label !== void 0) job.statusLabel = update.label;
+            if (update.submittedText !== void 0) job.submittedText = update.submittedText;
+            if (update.current !== void 0) job.current = update.current;
+            if (update.total !== void 0) job.total = update.total;
+            this.render();
+          };
+          try {
+            const value = await job.run(report2);
+            const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
+            this.lastCompletion = `${job.label} completed in ${elapsed} second${elapsed === 1 ? "" : "s"}.`;
+            new import_obsidian8.Notice(`${this.appName}: ${this.lastCompletion}`, 4e3);
+            job.resolve({ status: "completed", value });
+          } catch (error) {
+            diagnostics.failure("ai-request-queue.caught_5", error);
+            const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1e3));
+            const detail = error instanceof Error ? error.message : "Unknown error";
+            this.lastCompletion = `${job.label} failed after ${elapsed} second${elapsed === 1 ? "" : "s"}: ${detail}`;
+            new import_obsidian8.Notice(`${this.appName}: ${job.label} failed. ${detail}`, 6e3);
+            job.resolve({ status: "failed", error });
+          } finally {
+            this.active = null;
+            this.render();
+          }
         }
+      } finally {
+        this.running = false;
       }
+    } catch (diagnosticError4) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "ai-request-queue.drain", diagnosticError4);
+      throw diagnosticError4;
     } finally {
-      this.running = false;
+      diagnosticEnd4();
     }
   }
   clearWaiting() {
@@ -899,41 +1711,57 @@ var AiRequestQueue = class extends import_obsidian7.Modal {
     for (const job of removed) job.resolve({ status: "cleared" });
     if (removed.length) {
       this.lastCompletion = `${removed.length} waiting AI request${removed.length === 1 ? " was" : "s were"} removed.`;
-      new import_obsidian7.Notice(`${this.appName}: cleared ${removed.length} waiting AI request${removed.length === 1 ? "" : "s"}.`, 4e3);
+      new import_obsidian8.Notice(`${this.appName}: cleared ${removed.length} waiting AI request${removed.length === 1 ? "" : "s"}.`, 4e3);
       this.render();
     }
   }
   render() {
     var _a;
-    if (!this.opened) return;
-    const root = this.contentEl;
-    root.empty();
-    root.createEl("h2", { text: `${this.appName} AI request queue` });
-    if (this.active) {
-      const elapsed = Math.max(0, Math.floor((Date.now() - ((_a = this.active.startedAt) != null ? _a : Date.now())) / 1e3));
-      const active = root.createDiv();
-      active.createEl("h3", { text: `Processing: ${this.active.label}` });
-      active.createEl("p", { text: `${this.active.statusLabel} \xB7 ${elapsed} second${elapsed === 1 ? "" : "s"} elapsed${this.active.current && this.active.total ? ` \xB7 ${this.active.current}/${this.active.total}` : ""}` });
-      active.createEl("p", { text: "Text sent to AI (excerpt)" });
-      const excerpt = active.createEl("pre", { text: this.active.submittedText.trim().slice(0, 320) || "Preparing the text to send\u2026" });
-      excerpt.style.whiteSpace = "pre-wrap";
-      excerpt.style.maxHeight = "12em";
-      excerpt.style.overflow = "auto";
-    } else {
-      root.createEl("p", { text: "No AI request is processing." });
-    }
-    root.createEl("h3", { text: `Waiting (${this.pending.length})` });
-    if (!this.pending.length) root.createEl("p", { text: "The waiting queue is empty." });
-    for (const [index, job] of this.pending.entries()) {
-      const item = root.createDiv();
-      item.createEl("p", { text: `${index + 1}. ${job.label}` });
-      item.createEl("pre", { text: job.submittedText.trim().slice(0, 180) || "Text will be shown when this request starts." }).style.whiteSpace = "pre-wrap";
-    }
-    if (this.lastCompletion) root.createEl("p", { text: this.lastCompletion });
-    const footer = root.createDiv();
-    new import_obsidian7.ButtonComponent(footer).setButtonText("Clear waiting requests").setWarning().setDisabled(this.pending.length === 0).onClick(() => this.clearWaiting());
-    new import_obsidian7.ButtonComponent(footer).setButtonText("Close").onClick(() => this.close());
-    root.createEl("p", { text: "Clearing removes waiting requests. The active request will finish." }).style.color = "var(--text-muted)";
+    const diagnosticAction5 = () => {
+      var _a2;
+      if (!this.opened) return;
+      const root = this.contentEl;
+      root.empty();
+      root.createEl("h2", { text: `${this.appName} AI request queue` });
+      if (this.active) {
+        const elapsed = Math.max(0, Math.floor((Date.now() - ((_a2 = this.active.startedAt) != null ? _a2 : Date.now())) / 1e3));
+        const active = root.createDiv();
+        active.createEl("h3", { text: `Processing: ${this.active.label}` });
+        active.createEl("p", { text: `${this.active.statusLabel} \xB7 ${elapsed} second${elapsed === 1 ? "" : "s"} elapsed${this.active.current && this.active.total ? ` \xB7 ${this.active.current}/${this.active.total}` : ""}` });
+        active.createEl("p", { text: "Text sent to AI (excerpt)" });
+        const excerpt = active.createEl("pre", { text: this.active.submittedText.trim().slice(0, 320) || "Preparing the text to send\u2026" });
+        excerpt.style.whiteSpace = "pre-wrap";
+        excerpt.style.maxHeight = "12em";
+        excerpt.style.overflow = "auto";
+      } else {
+        root.createEl("p", { text: "No AI request is processing." });
+      }
+      root.createEl("h3", { text: `Waiting (${this.pending.length})` });
+      if (!this.pending.length) root.createEl("p", { text: "The waiting queue is empty." });
+      for (const [index, job] of this.pending.entries()) {
+        const item = root.createDiv();
+        item.createEl("p", { text: `${index + 1}. ${job.label}` });
+        item.createEl("pre", { text: job.submittedText.trim().slice(0, 180) || "Text will be shown when this request starts." }).style.whiteSpace = "pre-wrap";
+      }
+      if (this.lastCompletion) root.createEl("p", { text: this.lastCompletion });
+      const footer = root.createDiv();
+      new import_obsidian8.ButtonComponent(footer).setButtonText("Clear waiting requests").setWarning().setDisabled(this.pending.length === 0).onClick(() => {
+        return diagnostics.guard("ai-request-queue.control_6", () => {
+          var _a3;
+          const diagnosticAction6 = () => this.clearWaiting();
+          return ((_a3 = diagnostics) == null ? void 0 : _a3.run) ? diagnostics.run("control.clear_waiting_requests.onClick", diagnosticAction6) : diagnosticAction6();
+        });
+      });
+      new import_obsidian8.ButtonComponent(footer).setButtonText("Close").onClick(() => {
+        return diagnostics.guard("ai-request-queue.control_7", () => {
+          var _a3;
+          const diagnosticAction7 = () => this.close();
+          return ((_a3 = diagnostics) == null ? void 0 : _a3.run) ? diagnostics.run("control.close.onClick", diagnosticAction7) : diagnosticAction7();
+        });
+      });
+      root.createEl("p", { text: "Clearing removes waiting requests. The active request will finish." }).style.color = "var(--text-muted)";
+    };
+    return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("ai-request-queue.render", diagnosticAction5) : diagnosticAction5();
   }
 };
 
@@ -951,39 +1779,49 @@ function base64ToBytes(b64) {
   return bytes;
 }
 async function decryptSecretEnvelope(envelope, passphrase) {
-  if (envelope.x !== "AES-256-GCM" || envelope.w !== "PBKDF2-HMAC-SHA256") {
-    throw new Error(`Unsupported manifest envelope algorithm/kdf: ${envelope.x} / ${envelope.w}`);
+  var _a, _b, _c, _d, _e;
+  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.decryptSecretEnvelope")) != null ? _c : (() => {
+  });
+  try {
+    if (envelope.x !== "AES-256-GCM" || envelope.w !== "PBKDF2-HMAC-SHA256") {
+      throw new Error(`The AI connection could not be initialized. Update the plugin or contact support.`);
+    }
+    const keyMaterial = await window.crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(passphrase),
+      { name: "PBKDF2" },
+      false,
+      ["deriveKey"]
+    );
+    const key = await window.crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: base64ToBytes(envelope.a),
+        iterations: envelope.n,
+        hash: "SHA-256"
+      },
+      keyMaterial,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"]
+    );
+    const ciphertext = base64ToBytes(envelope.c);
+    const tag = base64ToBytes(envelope.d);
+    const ciphertextAndTag = new Uint8Array(new ArrayBuffer(ciphertext.length + tag.length));
+    ciphertextAndTag.set(ciphertext, 0);
+    ciphertextAndTag.set(tag, ciphertext.length);
+    const plaintext = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64ToBytes(envelope.b) },
+      key,
+      ciphertextAndTag
+    );
+    return await new TextDecoder().decode(plaintext);
+  } catch (diagnosticError1) {
+    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.decryptSecretEnvelope", diagnosticError1);
+    throw diagnosticError1;
+  } finally {
+    diagnosticEnd1();
   }
-  const keyMaterial = await window.crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(passphrase),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"]
-  );
-  const key = await window.crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: base64ToBytes(envelope.a),
-      iterations: envelope.n,
-      hash: "SHA-256"
-    },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"]
-  );
-  const ciphertext = base64ToBytes(envelope.c);
-  const tag = base64ToBytes(envelope.d);
-  const ciphertextAndTag = new Uint8Array(new ArrayBuffer(ciphertext.length + tag.length));
-  ciphertextAndTag.set(ciphertext, 0);
-  ciphertextAndTag.set(tag, ciphertext.length);
-  const plaintext = await window.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: base64ToBytes(envelope.b) },
-    key,
-    ciphertextAndTag
-  );
-  return new TextDecoder().decode(plaintext);
 }
 function selectSlot(manifest, wantState) {
   var _a;
@@ -995,46 +1833,82 @@ function selectSlot(manifest, wantState) {
   return (_a = manifest.r.find((slot) => slot.s === fallbackState)) != null ? _a : null;
 }
 async function fetchRemoteManifest(url) {
-  const response = await (0, import_obsidian8.requestUrl)({ url, method: "GET", throw: false });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Manifest fetch failed: HTTP ${response.status}`);
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.fetchRemoteManifest")) != null ? _c : (() => {
+  });
+  try {
+    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.main.fetchRemoteManifest", import_obsidian9.requestUrl, { url, method: "GET", throw: false })) != null ? _f : (0, import_obsidian9.requestUrl)({ url, method: "GET", throw: false }));
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`The AI connection is unavailable. Check your connection and try again.`);
+    }
+    return await response.json;
+  } catch (diagnosticError2) {
+    (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "main.fetchRemoteManifest", diagnosticError2);
+    throw diagnosticError2;
+  } finally {
+    diagnosticEnd2();
   }
-  return response.json;
 }
 async function tryDecryptManifestKey(manifest, source) {
-  const active = selectSlot(manifest, "active");
-  if (active) {
-    try {
-      const key = (await decryptSecretEnvelope(active.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
-      if (key) return key;
-    } catch (error) {
-      console.warn("Culebra: active manifest slot failed to decrypt", source, error);
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+  const diagnosticEnd3 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.tryDecryptManifestKey")) != null ? _c : (() => {
+  });
+  try {
+    const active = selectSlot(manifest, "active");
+    if (active) {
+      try {
+        const key = (await decryptSecretEnvelope(active.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
+        if (key) return await key;
+      } catch (error) {
+        diagnostics.failure("main.caught_extra_1", error);
+        (_e = (_d = diagnostics) == null ? void 0 : _d.legacy) == null ? void 0 : _e.call(_d, "warn", "main.culebra_active_manifest_slot_failed_to_decrypt");
+      }
     }
-  }
-  const next = selectSlot(manifest, "next");
-  if (next) {
-    try {
-      const key = (await decryptSecretEnvelope(next.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
-      if (key) return key;
-    } catch (error) {
-      console.warn("Culebra: next manifest slot failed to decrypt", source, error);
+    const next = selectSlot(manifest, "next");
+    if (next) {
+      try {
+        const key = (await decryptSecretEnvelope(next.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
+        if (key) return await key;
+      } catch (error) {
+        diagnostics.failure("main.caught_extra_2", error);
+        (_g = (_f = diagnostics) == null ? void 0 : _f.legacy) == null ? void 0 : _g.call(_f, "warn", "main.culebra_next_manifest_slot_failed_to_decrypt");
+      }
     }
+    throw new Error("The AI connection is unavailable. Check your connection and try again.");
+  } catch (diagnosticError3) {
+    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "main.tryDecryptManifestKey", diagnosticError3);
+    throw diagnosticError3;
+  } finally {
+    diagnosticEnd3();
   }
-  throw new Error("Remote key manifest did not decrypt to a usable key.");
 }
 async function fetchRemoteApiKey() {
+  var _a, _b, _c, _d, _e, _f, _g;
+  const diagnosticEnd4 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.fetchRemoteApiKey")) != null ? _c : (() => {
+  });
   try {
-    const manifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL);
-    return await tryDecryptManifestKey(manifest, REMOTE_MANIFEST_URL);
-  } catch (primaryError) {
-    console.warn("Culebra: primary manifest failed, trying next-manifest fallback", primaryError);
-    const primaryManifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL).catch(() => null);
-    const nextUrl = primaryManifest == null ? void 0 : primaryManifest.n;
-    if (nextUrl && nextUrl !== REMOTE_MANIFEST_URL) {
-      const nextManifest = await fetchRemoteManifest(nextUrl);
-      return await tryDecryptManifestKey(nextManifest, nextUrl);
+    try {
+      const manifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL);
+      return await tryDecryptManifestKey(manifest, REMOTE_MANIFEST_URL);
+    } catch (primaryError) {
+      diagnostics.failure("main.caught_extra_3", primaryError);
+      (_e = (_d = diagnostics) == null ? void 0 : _d.legacy) == null ? void 0 : _e.call(_d, "warn", "main.culebra_primary_manifest_failed_trying_next_manifest_fallback");
+      const primaryManifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL).catch((rejectedError1) => {
+        diagnostics.failure("main.rejected_2", rejectedError1);
+        return null;
+      });
+      const nextUrl = primaryManifest == null ? void 0 : primaryManifest.n;
+      if (nextUrl && nextUrl !== REMOTE_MANIFEST_URL) {
+        const nextManifest = await fetchRemoteManifest(nextUrl);
+        return await tryDecryptManifestKey(nextManifest, nextUrl);
+      }
+      throw primaryError;
     }
-    throw primaryError;
+  } catch (diagnosticError4) {
+    (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "main.fetchRemoteApiKey", diagnosticError4);
+    throw diagnosticError4;
+  } finally {
+    diagnosticEnd4();
   }
 }
 var SPELL_CORRECT_INSTRUCTIONS = `You are Culebra AI Spell Correct, a careful copy editor for an Obsidian Markdown vault.
@@ -1065,117 +1939,166 @@ function generateEventId() {
   return "evt_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 async function fetchConstanceEntitlements(plugin) {
-  var _a;
-  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
-  const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
-  const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
-    url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
-    method: "GET",
-    throw: false
+  var _a, _b, _c, _d, _e, _f;
+  const diagnosticEnd5 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.fetchConstanceEntitlements")) != null ? _c : (() => {
   });
-  if (response.status === 401 || response.status === 403 || response.status === 404) {
-    clearBillingSession(plugin.settings);
-    await plugin.saveSettings();
+  try {
+    if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
+    const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
+    const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
+      url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+      method: "GET",
+      throw: false
+    });
+    if (response.status === 401 || response.status === 403 || response.status === 404) {
+      clearBillingSession(plugin.settings);
+      await plugin.saveSettings();
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`Your account could not be updated. Check your connection and try again.`);
+    }
+    return await ((_d = response.json) == null ? void 0 : _d.data);
+  } catch (diagnosticError5) {
+    (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "main.fetchConstanceEntitlements", diagnosticError5);
+    throw diagnosticError5;
+  } finally {
+    diagnosticEnd5();
   }
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
-  }
-  return (_a = response.json) == null ? void 0 : _a.data;
 }
 async function spendConstanceCredits(plugin, amount, stableEventId) {
-  var _a, _b;
-  if (stableEventId.startsWith("consume_")) {
-    const result2 = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
-    if (result2.kind === "ok") {
-      plugin.settings.freeCredits = (_a = result2.freeRemaining) != null ? _a : plugin.settings.freeCredits;
-      return { kind: "ok", balance: (_b = result2.balance) != null ? _b : plugin.settings.purchasedCredits };
+  var _a, _b, _c, _d, _e, _f, _g;
+  const diagnosticEnd6 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.spendConstanceCredits")) != null ? _c : (() => {
+  });
+  try {
+    if (stableEventId.startsWith("consume_")) {
+      const result2 = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
+      if (result2.kind === "ok") {
+        plugin.settings.freeCredits = (_d = result2.freeRemaining) != null ? _d : plugin.settings.freeCredits;
+        return { kind: "ok", balance: (_e = result2.balance) != null ? _e : plugin.settings.purchasedCredits };
+      }
+      return { kind: result2.kind === "insufficient" ? "insufficient" : "error" };
     }
-    return { kind: result2.kind === "insufficient" ? "insufficient" : "error" };
+    const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
+    if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return await result;
+    clearBillingSession(plugin.settings);
+    await plugin.saveSettings();
+    return { kind: "error" };
+  } catch (diagnosticError6) {
+    (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "main.spendConstanceCredits", diagnosticError6);
+    throw diagnosticError6;
+  } finally {
+    diagnosticEnd6();
   }
-  const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
-  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
-  clearBillingSession(plugin.settings);
-  await plugin.saveSettings();
-  return { kind: "error" };
 }
 async function syncPurchasedCreditsFromConstance(plugin, manual = false) {
-  var _a, _b, _c, _d, _e;
-  resumeAccountCheckout({
-    state: plugin.settings,
-    appId: CONSTANCE_APP_ID,
-    installationId: plugin.settings.constanceDeviceId,
-    persist: () => plugin.saveSettings(),
-    syncBalance: () => syncPurchasedCreditsFromConstance(plugin),
-    refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings())
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  const diagnosticEnd7 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.syncPurchasedCreditsFromConstance")) != null ? _c : (() => {
   });
-  if (!plugin.settings.constanceDeviceId) {
-    return;
-  }
   try {
-    const entitlement = await fetchConstanceEntitlements(plugin);
-    const serverBalance = (_c = (_a = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _a.total_available) != null ? _c : (_b = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _b.balance;
-    if (!Number.isFinite(serverBalance)) throw new Error("Billing returned an invalid balance");
-    plugin.settings.freeCredits = Math.max(0, Number((_d = entitlement == null ? void 0 : entitlement.free_usage) == null ? void 0 : _d.remaining) || 0);
-    plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
-    await plugin.saveSettings();
-    (_e = plugin.refreshBillingCredits) == null ? void 0 : _e.call(plugin);
-  } catch (error) {
-    if (manual) throw error;
-    console.error("Culebra: Constance entitlement sync failed", error);
+    resumeAccountCheckout({
+      state: plugin.settings,
+      appId: CONSTANCE_APP_ID,
+      installationId: plugin.settings.constanceDeviceId,
+      persist: () => plugin.saveSettings(),
+      syncBalance: () => syncPurchasedCreditsFromConstance(plugin),
+      refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings())
+    });
+    if (!plugin.settings.constanceDeviceId) {
+      return;
+    }
+    try {
+      const entitlement = await fetchConstanceEntitlements(plugin);
+      const serverBalance = (_f = (_d = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _d.total_available) != null ? _f : (_e = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _e.balance;
+      const freeRemaining = (_g = entitlement == null ? void 0 : entitlement.free_usage) == null ? void 0 : _g.remaining;
+      if (!Number.isFinite(serverBalance) || serverBalance < 0 || !Number.isFinite(freeRemaining) || freeRemaining < 0) throw new Error("Your balance could not be updated. Refresh it and try again.");
+      plugin.settings.freeCredits = freeRemaining;
+      plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
+      await plugin.saveSettings();
+      (_h = plugin.refreshBillingCredits) == null ? void 0 : _h.call(plugin);
+    } catch (error) {
+      diagnostics.failure("main.caught_1", error);
+      if (manual) throw error;
+      (_j = (_i = diagnostics) == null ? void 0 : _i.legacy) == null ? void 0 : _j.call(_i, "error", "main.culebra_constance_entitlement_sync_failed");
+    }
+  } catch (diagnosticError7) {
+    (_l = (_k = diagnostics) == null ? void 0 : _k.failure) == null ? void 0 : _l.call(_k, "main.syncPurchasedCreditsFromConstance", diagnosticError7);
+    throw diagnosticError7;
+  } finally {
+    diagnosticEnd7();
   }
 }
 async function retryPendingSpendEvents(plugin) {
-  var _a;
-  const pending = [...(_a = plugin.settings.pendingSpendEvents) != null ? _a : []];
-  for (const event of pending) {
-    if (event.kind === "free") {
-      const result2 = await claimAccountFreeUsage(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, event.eventId, event.amount);
-      if (result2.kind === "error" || result2.kind === "auth-required") break;
+  var _a, _b, _c, _d, _e, _f;
+  const diagnosticEnd8 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.retryPendingSpendEvents")) != null ? _c : (() => {
+  });
+  try {
+    const pending = [...(_d = plugin.settings.pendingSpendEvents) != null ? _d : []];
+    for (const event of pending) {
+      if (event.kind === "free") {
+        const result2 = await claimAccountFreeUsage(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, event.eventId, event.amount);
+        if (result2.kind === "error" || result2.kind === "auth-required") break;
+        plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
+        if (result2.kind === "ok") plugin.settings.freeCredits = result2.remaining;
+        await plugin.saveSettings();
+        continue;
+      }
+      const result = await spendConstanceCredits(plugin, event.amount, event.eventId);
+      if (result.kind === "error") break;
       plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
-      if (result2.kind === "ok") plugin.settings.freeCredits = result2.remaining;
+      if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
+      else plugin.settings.purchasedCredits = 0;
       await plugin.saveSettings();
-      continue;
     }
-    const result = await spendConstanceCredits(plugin, event.amount, event.eventId);
-    if (result.kind === "error") break;
-    plugin.settings.pendingSpendEvents = plugin.settings.pendingSpendEvents.filter((item) => item.eventId !== event.eventId);
-    if (result.kind === "ok") plugin.settings.purchasedCredits = result.balance;
-    else plugin.settings.purchasedCredits = 0;
-    await plugin.saveSettings();
+  } catch (diagnosticError8) {
+    (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "main.retryPendingSpendEvents", diagnosticError8);
+    throw diagnosticError8;
+  } finally {
+    diagnosticEnd8();
   }
 }
 async function checkBillingBeforeAi(plugin, amount) {
-  var _a, _b, _c, _d;
-  if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-    new import_obsidian8.Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
-    return false;
-  }
-  await retryPendingSpendEvents(plugin);
-  if (plugin.settings.pendingSpendEvents.length > 0) {
-    new import_obsidian8.Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
-    return false;
-  }
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+  const diagnosticEnd9 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.checkBillingBeforeAi")) != null ? _c : (() => {
+  });
   try {
-    const entitlement = await fetchConstanceEntitlements(plugin);
-    const freeRemaining = Math.max(0, Number((_a = entitlement == null ? void 0 : entitlement.free_usage) == null ? void 0 : _a.remaining) || 0);
-    const paidBalance = Math.max(0, Number((_d = (_b = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _b.total_available) != null ? _d : (_c = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _c.balance) || 0);
-    plugin.settings.freeCredits = freeRemaining;
-    plugin.settings.purchasedCredits = paidBalance;
-    await plugin.saveSettings();
-    if (freeRemaining + paidBalance >= amount) return true;
-    new import_obsidian8.Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
-    return false;
-  } catch (e) {
     if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-      new import_obsidian8.Notice("Culebra: your billing session expired. Sign in again before using AI.");
-    } else {
-      new import_obsidian8.Notice("Culebra: billing could not be verified. No AI request was sent.");
+      new import_obsidian9.Notice("Culebra: sign in or create an account in plugin settings before sending text to AI.");
+      return false;
     }
-    return false;
+    await retryPendingSpendEvents(plugin);
+    if (plugin.settings.pendingSpendEvents.length > 0) {
+      new import_obsidian9.Notice("Culebra: a previous charge is still being confirmed. No AI request was sent.");
+      return false;
+    }
+    try {
+      const entitlement = await fetchConstanceEntitlements(plugin);
+      const freeRemaining = Math.max(0, Number((_d = entitlement == null ? void 0 : entitlement.free_usage) == null ? void 0 : _d.remaining) || 0);
+      const paidBalance = Math.max(0, Number((_g = (_e = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _e.total_available) != null ? _g : (_f = entitlement == null ? void 0 : entitlement.credits) == null ? void 0 : _f.balance) || 0);
+      plugin.settings.freeCredits = freeRemaining;
+      plugin.settings.purchasedCredits = paidBalance;
+      await plugin.saveSettings();
+      if (freeRemaining + paidBalance >= amount) return true;
+      new import_obsidian9.Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
+      return false;
+    } catch (caughtError2) {
+      diagnostics.failure("main.caught_3", caughtError2);
+      if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
+        new import_obsidian9.Notice("Culebra: your session expired. Sign in again before using AI.");
+      } else {
+        new import_obsidian9.Notice("Culebra: your account could not be verified. No AI request was sent.");
+      }
+      return false;
+    }
+  } catch (diagnosticError9) {
+    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "main.checkBillingBeforeAi", diagnosticError9);
+    throw diagnosticError9;
+  } finally {
+    diagnosticEnd9();
   }
 }
 var DEFAULT_SETTINGS = {
   settingsMode: "simple",
+  debugLogging: false,
   model: DEFAULT_MODEL,
   apiKey: "",
   constanceDeviceId: "",
@@ -1190,7 +2113,7 @@ var DEFAULT_SETTINGS = {
   onboardingSeen: false,
   reviewBeforeApply: false
 };
-var CulebraSpellCorrectPlugin = class extends import_obsidian8.Plugin {
+var CulebraSpellCorrectPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -1199,85 +2122,181 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian8.Plugin {
     this.remoteApiKeyCache = null;
   }
   async resolveApiKey() {
-    if (this.remoteApiKeyCache) {
-      return this.remoteApiKeyCache;
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd10 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.resolveApiKey")) != null ? _c : (() => {
+    });
+    try {
+      if (this.remoteApiKeyCache) {
+        return await this.remoteApiKeyCache;
+      }
+      const key = await fetchRemoteApiKey();
+      this.remoteApiKeyCache = key;
+      return await key;
+    } catch (diagnosticError10) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.resolveApiKey", diagnosticError10);
+      throw diagnosticError10;
+    } finally {
+      diagnosticEnd10();
     }
-    const key = await fetchRemoteApiKey();
-    this.remoteApiKeyCache = key;
-    return key;
   }
   async onload() {
-    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a one-action AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
-    this.support.start();
-    await this.loadSettings();
-    this.aiQueue = new AiRequestQueue(this.app, "Culebra");
-    await showAccountWelcome(this, this.settings, () => this.saveSettings());
-    if (!this.settings.constanceDeviceId) {
-      this.settings.constanceDeviceId = generateSecureDeviceId();
-      await this.saveSettings();
-    }
-    this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents) ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0) : [];
-    this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
-    this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
-    this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
-    this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
-    await this.saveSettings();
-    if (!this.settings.onboardingSeen) {
-      this.settings.onboardingSeen = true;
-      await this.saveSettings();
-    }
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor) => {
-        const hasSelection = editor.getSelection().trim().length > 0;
-        menu.addItem((item) => {
-          item.setTitle(hasSelection ? "Culebra: Correct selected text" : "Culebra: Correct current note").setIcon("spell-check").onClick(() => {
-            void this.correctEditorText(editor);
-          });
-        });
-      })
-    );
-    this.registerEvent(
-      this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof import_obsidian8.TFile) || file.extension !== "md") {
-          return;
-        }
-        menu.addItem((item) => {
-          item.setTitle("Culebra: Correct this Markdown file").setIcon("spell-check").onClick(() => {
-            void this.correctFile(file);
-          });
-        });
-      })
-    );
-    this.addCommand({
-      id: "spell-correct",
-      name: "Correct selection or current note",
-      editorCallback: (editor) => this.correctEditorText(editor)
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    let diagnosticStartupEnd = () => {
+    };
+    const diagnosticEnd11 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.onload")) != null ? _c : (() => {
     });
-    this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
-    this.addSettingTab(new CulebraSettingTab(this.app, this));
-    void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
+    try {
+      this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct spelling, grammar, and punctuation in selected text or a note.", quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."] });
+      this.support.start();
+      await this.loadSettings();
+      diagnosticStartupEnd = (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.start) == null ? void 0 : _e.call(_d, "startup.initialize")) != null ? _f : (() => {
+      });
+      this.aiQueue = new AiRequestQueue(this.app, "Culebra", () => this.support.automaticWindowsEnabled());
+      await showAccountWelcome(this, this.settings, () => this.saveSettings());
+      if (!this.settings.constanceDeviceId) {
+        this.settings.constanceDeviceId = generateSecureDeviceId();
+        await this.saveSettings();
+      }
+      this.settings.pendingSpendEvents = Array.isArray(this.settings.pendingSpendEvents) ? this.settings.pendingSpendEvents.filter((item) => item && typeof item.eventId === "string" && Number.isInteger(item.amount) && item.amount > 0) : [];
+      this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
+      this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
+      this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
+      this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
+      await this.saveSettings();
+      if (!this.settings.onboardingSeen) {
+        this.settings.onboardingSeen = true;
+        await this.saveSettings();
+      }
+      this.registerEvent(
+        this.app.workspace.on("editor-menu", (menu, editor) => {
+          return diagnostics.guard("main.event_4", () => {
+            const hasSelection = editor.getSelection().trim().length > 0;
+            menu.addItem((item) => {
+              item.setTitle(hasSelection ? "Culebra: Correct selected text" : "Culebra: Correct current note").setIcon("spell-check").onClick(() => {
+                return diagnostics.guard("main.control_5", () => {
+                  var _a2;
+                  const diagnosticAction12 = () => {
+                    void diagnostics.guard("main.background_6", () => this.correctEditorText(editor));
+                  };
+                  return ((_a2 = diagnostics) == null ? void 0 : _a2.run) ? diagnostics.run("control.18393.onClick", diagnosticAction12) : diagnosticAction12();
+                });
+              });
+            });
+          });
+        })
+      );
+      this.registerEvent(
+        this.app.workspace.on("file-menu", (menu, file) => {
+          return diagnostics.guard("main.event_7", () => {
+            if (!(file instanceof import_obsidian9.TFile) || file.extension !== "md") {
+              return;
+            }
+            menu.addItem((item) => {
+              item.setTitle("Culebra: Correct this Markdown file").setIcon("spell-check").onClick(() => {
+                return diagnostics.guard("main.control_8", () => {
+                  var _a2;
+                  const diagnosticAction13 = () => {
+                    void diagnostics.guard("main.background_9", () => this.correctFile(file));
+                  };
+                  return ((_a2 = diagnostics) == null ? void 0 : _a2.run) ? diagnostics.run("control.18843.onClick", diagnosticAction13) : diagnosticAction13();
+                });
+              });
+            });
+          });
+        })
+      );
+      this.addCommand({
+        id: "spell-correct",
+        name: "Correct selection or current note",
+        editorCallback: (editor) => this.correctEditorText(editor)
+      });
+      this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
+      registerSelectionAction(this, {
+        name: "Culebra: Correct selected notes",
+        icon: "spell-check",
+        accepts: markdownFile,
+        folders: true,
+        run: async (files) => {
+          new import_obsidian9.Notice(`Culebra: correcting ${files.length} note(s).`);
+          let failed = 0;
+          for (const file of files) {
+            try {
+              await this.correctFile(file);
+            } catch (e) {
+              failed++;
+            }
+          }
+          new import_obsidian9.Notice(`Culebra: selection finished; ${failed} failed.`);
+        }
+      });
+      this.addSettingTab(new CulebraSettingTab(this.app, this));
+      this.support.showWelcome();
+      void diagnostics.guard("main.background_10", () => syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this)));
+    } catch (diagnosticError11) {
+      (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "main.onload", diagnosticError11);
+      throw diagnosticError11;
+    } finally {
+      diagnosticStartupEnd();
+      (_j = (_i = diagnostics) == null ? void 0 : _i.legacy) == null ? void 0 : _j.call(_i, "info", "startup.finished");
+      diagnosticEnd11();
+    }
   }
   async loadSettings() {
-    const savedSettings = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
-    this.settings.settingsMode = this.settings.settingsMode === "advanced" ? "advanced" : "simple";
-    this.settings.freeCredits = 0;
-    if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {
-      this.settings.onboardingSeen = true;
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd14 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.loadSettings")) != null ? _c : (() => {
+    });
+    try {
+      const savedSettings = await this.loadData();
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+      this.settings.settingsMode = this.settings.settingsMode === "advanced" ? "advanced" : "simple";
+      this.settings.freeCredits = 0;
+      if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {
+        this.settings.onboardingSeen = true;
+      }
+    } catch (diagnosticError14) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.loadSettings", diagnosticError14);
+      throw diagnosticError14;
+    } finally {
+      diagnosticEnd14();
     }
   }
   async saveSettings() {
-    await this.saveData(this.settings);
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd15 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.saveSettings")) != null ? _c : (() => {
+    });
+    try {
+      await this.saveData(this.settings);
+    } catch (diagnosticError15) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.saveSettings", diagnosticError15);
+      throw diagnosticError15;
+    } finally {
+      diagnosticEnd15();
+    }
   }
   pollAfterCheckout(checkoutId) {
     let attempts = 0;
     const intervalId = window.setInterval(() => {
-      attempts += 1;
-      void (async () => {
-        const settled = checkoutId ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch(() => false) : false;
-        if (settled || !checkoutId) await syncPurchasedCreditsFromConstance(this);
-        if (settled || attempts >= 6) window.clearInterval(intervalId);
-      })();
+      return diagnostics.guard("main.timer_11", () => {
+        attempts += 1;
+        void diagnostics.guard("main.background_12", () => (async () => {
+          var _a, _b, _c, _d, _e;
+          const diagnosticEnd16 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.background.20331")) != null ? _c : (() => {
+          });
+          try {
+            const settled = checkoutId ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch((rejectedError3) => {
+              diagnostics.failure("main.rejected_4", rejectedError3);
+              return false;
+            }) : false;
+            if (settled || !checkoutId) await syncPurchasedCreditsFromConstance(this);
+            if (settled || attempts >= 6) window.clearInterval(intervalId);
+          } catch (diagnosticError16) {
+            (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.background.20331", diagnosticError16);
+            throw diagnosticError16;
+          } finally {
+            diagnosticEnd16();
+          }
+        })());
+      });
     }, 15e3);
   }
   /**
@@ -1287,155 +2306,223 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian8.Plugin {
    * server gives an authoritative result.
    */
   async chargeOneCredit(textLength) {
-    const cost = Math.max(1, Math.ceil(textLength));
-    if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
-      new import_obsidian8.Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
-      return false;
-    }
-    await retryPendingSpendEvents(this);
-    if (this.settings.pendingSpendEvents.length > 0) {
-      new import_obsidian8.Notice("Culebra: a previous billing operation is still being reconciled. No correction was applied.");
-      return false;
-    }
-    const stableEventId = `consume_${generateEventId()}`;
-    this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    const diagnosticEnd17 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.chargeOneCredit")) != null ? _c : (() => {
+    });
     try {
-      await this.saveSettings();
-    } catch (error) {
-      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
-      console.error("Culebra: could not persist pending credit spend", error);
+      const cost = Math.max(1, Math.ceil(textLength));
+      if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
+        new import_obsidian9.Notice("Culebra: sign in or create an account in plugin settings before correcting text.");
+        return false;
+      }
+      await retryPendingSpendEvents(this);
+      if (this.settings.pendingSpendEvents.length > 0) {
+        new import_obsidian9.Notice("Culebra: a previous charge is still being confirmed. No correction was applied.");
+        return false;
+      }
+      const stableEventId = `consume_${generateEventId()}`;
+      this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+      try {
+        await this.saveSettings();
+      } catch (error) {
+        diagnostics.failure("main.caught_13", error);
+        this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
+        (_e = (_d = diagnostics) == null ? void 0 : _d.legacy) == null ? void 0 : _e.call(_d, "error", "main.culebra_could_not_persist_pending_credit_spend");
+        return false;
+      }
+      const result = await spendConstanceCredits(this, cost, stableEventId);
+      if (result.kind === "ok") {
+        this.settings.purchasedCredits = result.balance;
+        this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
+        await this.saveSettings();
+        return true;
+      }
+      if (result.kind === "insufficient") {
+        this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
+        await this.saveSettings();
+        new import_obsidian9.Notice("Culebra: no character credits remain. Add credits in plugin settings.");
+        return false;
+      }
+      (_g = (_f = diagnostics) == null ? void 0 : _f.legacy) == null ? void 0 : _g.call(_f, "warn", "main.culebra_credit_spend_is_unknown_blocking_until_the_persisted_even");
+      new import_obsidian9.Notice("Culebra: your account could not be verified. Retry after the connection is restored.");
       return false;
+    } catch (diagnosticError17) {
+      (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "main.chargeOneCredit", diagnosticError17);
+      throw diagnosticError17;
+    } finally {
+      diagnosticEnd17();
     }
-    const result = await spendConstanceCredits(this, cost, stableEventId);
-    if (result.kind === "ok") {
-      this.settings.purchasedCredits = result.balance;
-      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
-      await this.saveSettings();
-      return true;
-    }
-    if (result.kind === "insufficient") {
-      this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
-      await this.saveSettings();
-      new import_obsidian8.Notice("Culebra: out of characters. Review current one-time offers in plugin settings.");
-      return false;
-    }
-    console.warn("Culebra: credit spend is unknown; blocking until the persisted event can be reconciled.");
-    new import_obsidian8.Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
-    return false;
   }
   /** Correct the current selection, or the whole active note when no text is selected. */
   async correctEditorText(editor) {
-    const selection = editor.getSelection();
-    const hasSelection = selection.trim().length > 0;
-    const originalText = hasSelection ? selection : editor.getValue();
-    const target = hasSelection ? "selection" : "current note";
-    const correctedText = await this.correctText(originalText, target);
-    if (!correctedText) {
-      return;
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd18 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.correctEditorText")) != null ? _c : (() => {
+    });
+    try {
+      const selection = editor.getSelection();
+      const hasSelection = selection.trim().length > 0;
+      const originalText = hasSelection ? selection : editor.getValue();
+      const target = hasSelection ? "selection" : "current note";
+      const correctedText = await this.correctText(originalText, target);
+      if (!correctedText) {
+        return;
+      }
+      if (correctedText === originalText) {
+        new import_obsidian9.Notice(`Culebra found no changes in the ${target}.`);
+        return;
+      }
+      if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult()) return;
+      if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
+        new import_obsidian9.Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
+        return;
+      }
+      if (!await this.chargeOneCredit(originalText.length)) return;
+      if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
+        new import_obsidian9.Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
+        return;
+      }
+      if (hasSelection) {
+        editor.replaceSelection(correctedText);
+      } else {
+        editor.setValue(correctedText);
+      }
+      new import_obsidian9.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
+    } catch (diagnosticError18) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.correctEditorText", diagnosticError18);
+      throw diagnosticError18;
+    } finally {
+      diagnosticEnd18();
     }
-    if (correctedText === originalText) {
-      new import_obsidian8.Notice(`Culebra found no changes in the ${target}.`);
-      return;
-    }
-    if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult()) return;
-    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new import_obsidian8.Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
-      return;
-    }
-    if (!await this.chargeOneCredit(originalText.length)) return;
-    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new import_obsidian8.Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
-      return;
-    }
-    if (hasSelection) {
-      editor.replaceSelection(correctedText);
-    } else {
-      editor.setValue(correctedText);
-    }
-    new import_obsidian8.Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
   }
   /** Replace a Markdown file after optional Settings-based before/after review. */
   async correctFile(file) {
-    const originalText = await this.app.vault.read(file);
-    const correctedText = await this.correctText(originalText, file.name);
-    if (!correctedText) {
-      return;
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd19 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.correctFile")) != null ? _c : (() => {
+    });
+    try {
+      const originalText = await this.app.vault.read(file);
+      const correctedText = await this.correctText(originalText, file.name);
+      if (!correctedText) {
+        return;
+      }
+      if (correctedText === originalText) {
+        new import_obsidian9.Notice(`Culebra found no changes in ${file.name}.`);
+        return;
+      }
+      if (await this.app.vault.read(file) !== originalText) {
+        new import_obsidian9.Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
+        return;
+      }
+      if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult()) return;
+      if (!await this.chargeOneCredit(originalText.length)) return;
+      if (await this.app.vault.read(file) !== originalText) {
+        new import_obsidian9.Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
+        return;
+      }
+      await this.app.vault.modify(file, correctedText);
+      new import_obsidian9.Notice(`Culebra corrected ${file.name}.`);
+    } catch (diagnosticError19) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.correctFile", diagnosticError19);
+      throw diagnosticError19;
+    } finally {
+      diagnosticEnd19();
     }
-    if (correctedText === originalText) {
-      new import_obsidian8.Notice(`Culebra found no changes in ${file.name}.`);
-      return;
-    }
-    if (await this.app.vault.read(file) !== originalText) {
-      new import_obsidian8.Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
-      return;
-    }
-    if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult()) return;
-    if (!await this.chargeOneCredit(originalText.length)) return;
-    if (await this.app.vault.read(file) !== originalText) {
-      new import_obsidian8.Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
-      return;
-    }
-    await this.app.vault.modify(file, correctedText);
-    new import_obsidian8.Notice(`Culebra corrected ${file.name}.`);
   }
   /** Ask the configured provider for corrected text without mutating the vault. */
   async correctText(originalText, targetLabel) {
-    if (!originalText.trim()) {
-      new import_obsidian8.Notice("Culebra found no text to correct.");
-      return null;
-    }
-    const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report) => {
-      report({ label: "Checking billing eligibility", submittedText: originalText });
-      const cost = Math.max(1, Math.ceil(originalText.length));
-      if (!await checkBillingBeforeAi(this, cost)) return null;
-      let apiKey;
-      try {
-        report({ label: "Resolving OpenRouter connection", submittedText: originalText });
-        apiKey = await this.resolveApiKey();
-      } catch (error) {
-        console.error("Culebra: failed to resolve an OpenRouter API key", error);
-        new import_obsidian8.Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
-        return null;
-      }
-      try {
-        report({ label: "Sending text to OpenRouter", submittedText: originalText });
-        const response = await (0, import_obsidian8.requestUrl)({
-          url: OPENROUTER_CHAT_COMPLETIONS_URL,
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: DEFAULT_MODEL,
-            messages: [
-              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
-              { role: "user", content: originalText }
-            ]
-          }),
-          throw: false
-        });
-        if (response.status < 200 || response.status >= 300) {
-          console.error("Culebra AI Spell Correct failed", response.status, response.text);
-          new import_obsidian8.Notice("Culebra correction failed. Check the developer console.");
-          return null;
-        }
-        const correctedText = extractResponseText(response.json);
-        if (!correctedText.trim()) {
-          new import_obsidian8.Notice("Culebra received an empty response; no changes made.");
-          return null;
-        }
-        return correctedText;
-      } catch (error) {
-        console.error("Culebra AI Spell Correct failed", error);
-        new import_obsidian8.Notice("Culebra correction failed. Check the developer console.");
-        return null;
-      }
+    var _a, _b, _c, _d, _e;
+    const diagnosticEnd20 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.correctText")) != null ? _c : (() => {
     });
-    return queued.status === "completed" ? queued.value : null;
+    try {
+      if (!originalText.trim()) {
+        new import_obsidian9.Notice("Culebra found no text to correct.");
+        return null;
+      }
+      const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report2) => {
+        var _a2, _b2, _c2, _d2, _e2, _f, _g, _h, _i, _j, _k, _l, _m, _n;
+        const diagnosticEnd21 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "main.background.26150")) != null ? _c2 : (() => {
+        });
+        try {
+          report2({ label: "Checking available credits", submittedText: originalText });
+          const cost = Math.max(1, Math.ceil(originalText.length));
+          if (!await checkBillingBeforeAi(this, cost)) return null;
+          let apiKey;
+          try {
+            report2({ label: "Connecting to AI", submittedText: originalText });
+            apiKey = await this.resolveApiKey();
+          } catch (error) {
+            diagnostics.failure("main.caught_extra_4", error);
+            (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.legacy) == null ? void 0 : _e2.call(_d2, "error", "main.culebra_failed_to_resolve_an_openrouter_api_key");
+            new import_obsidian9.Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
+            return null;
+          }
+          try {
+            report2({ label: "Processing text", submittedText: originalText });
+            const response = await ((_h = (_g = (_f = diagnostics) == null ? void 0 : _f.request) == null ? void 0 : _g.call(_f, "network.main.correctText", import_obsidian9.requestUrl, {
+              url: OPENROUTER_CHAT_COMPLETIONS_URL,
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: DEFAULT_MODEL,
+                messages: [
+                  { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+                  { role: "user", content: originalText }
+                ]
+              }),
+              throw: false
+            })) != null ? _h : (0, import_obsidian9.requestUrl)({
+              url: OPENROUTER_CHAT_COMPLETIONS_URL,
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: DEFAULT_MODEL,
+                messages: [
+                  { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+                  { role: "user", content: originalText }
+                ]
+              }),
+              throw: false
+            }));
+            if (response.status < 200 || response.status >= 300) {
+              (_j = (_i = diagnostics) == null ? void 0 : _i.legacy) == null ? void 0 : _j.call(_i, "error", "main.culebra_ai_spell_correct_failed");
+              new import_obsidian9.Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
+              return null;
+            }
+            const correctedText = extractResponseText(response.json);
+            if (!correctedText.trim()) {
+              new import_obsidian9.Notice("Culebra received an empty response; no changes made.");
+              return null;
+            }
+            return await correctedText;
+          } catch (error) {
+            diagnostics.failure("main.caught_extra_5", error);
+            (_l = (_k = diagnostics) == null ? void 0 : _k.legacy) == null ? void 0 : _l.call(_k, "error", "main.culebra_ai_spell_correct_failed");
+            new import_obsidian9.Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
+            return null;
+          }
+        } catch (diagnosticError21) {
+          (_n = (_m = diagnostics) == null ? void 0 : _m.failure) == null ? void 0 : _n.call(_m, "main.background.26150", diagnosticError21);
+          throw diagnosticError21;
+        } finally {
+          diagnosticEnd21();
+        }
+      });
+      return await (queued.status === "completed" ? queued.value : null);
+    } catch (diagnosticError20) {
+      (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "main.correctText", diagnosticError20);
+      throw diagnosticError20;
+    } finally {
+      diagnosticEnd20();
+    }
   }
 };
-var CorrectionReviewModal = class extends import_obsidian8.Modal {
+var CorrectionReviewModal = class extends import_obsidian9.Modal {
   constructor(app, target, before, after) {
     super(app);
     this.target = target;
@@ -1450,18 +2537,24 @@ var CorrectionReviewModal = class extends import_obsidian8.Modal {
     });
   }
   onOpen() {
-    this.contentEl.createEl("h2", { text: `Review correction: ${this.target}` });
-    const diff = this.contentEl.createEl("pre", { text: `BEFORE
+    return diagnostics.guard("main.onOpen_14", () => {
+      var _a;
+      const diagnosticAction22 = () => {
+        this.contentEl.createEl("h2", { text: `Review correction: ${this.target}` });
+        const diff = this.contentEl.createEl("pre", { text: `BEFORE
 ${this.before}
 
 AFTER
 ${this.after}` });
-    diff.style.whiteSpace = "pre-wrap";
-    diff.style.maxHeight = "55vh";
-    diff.style.overflow = "auto";
-    const actions = this.contentEl.createDiv();
-    actions.createEl("button", { text: "Cancel" }).onclick = () => this.finish(false);
-    actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = () => this.finish(true);
+        diff.style.whiteSpace = "pre-wrap";
+        diff.style.maxHeight = "55vh";
+        diff.style.overflow = "auto";
+        const actions = this.contentEl.createDiv();
+        actions.createEl("button", { text: "Cancel" }).onclick = diagnostics.wrap("main.dom_1", () => this.finish(false));
+        actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = diagnostics.wrap("main.dom_2", () => this.finish(true));
+      };
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.onOpen", diagnosticAction22) : diagnosticAction22();
+    });
   }
   finish(approved) {
     if (this.settled) return;
@@ -1470,11 +2563,17 @@ ${this.after}` });
     this.close();
   }
   onClose() {
-    if (!this.settled) {
-      this.settled = true;
-      this.resolveResult(false);
-    }
-    this.contentEl.empty();
+    return diagnostics.guard("main.onClose_15", () => {
+      var _a;
+      const diagnosticAction23 = () => {
+        if (!this.settled) {
+          this.settled = true;
+          this.resolveResult(false);
+        }
+        this.contentEl.empty();
+      };
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.onClose", diagnosticAction23) : diagnosticAction23();
+    });
   }
 };
 function extractResponseText(responseJson) {
@@ -1486,79 +2585,193 @@ function extractResponseText(responseJson) {
   const content = (_c = (_b = (_a = response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
   return typeof content === "string" ? content : "";
 }
-var CulebraSettingTab = class extends import_obsidian8.PluginSettingTab {
+var CulebraSettingTab = class extends import_obsidian9.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.creditsSummaryEl = null;
     this.plugin = plugin;
   }
   display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
-    new import_obsidian8.Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday controls. Advanced adds customization and troubleshooting.").addDropdown((dropdown) => dropdown.addOption("simple", "Simple").addOption("advanced", "Advanced").setValue(this.plugin.settings.settingsMode).onChange(async (value) => {
-      this.plugin.settings.settingsMode = value === "advanced" ? "advanced" : "simple";
-      await this.plugin.saveSettings();
-      this.display();
-    }));
-    containerEl.createEl("h3", { text: "Getting started" });
-    containerEl.createEl("p", {
-      text: "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo."
-    });
-    new import_obsidian8.Setting(containerEl).setName("Review before applying").setDesc("Off by default for one-click corrections. Turn on to see a before/after review for each correction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
-      this.plugin.settings.reviewBeforeApply = value;
-      await this.plugin.saveSettings();
-    }));
-    containerEl.createEl("p", {
-      text: "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted."
-    });
-    if (this.plugin.settings.settingsMode === "advanced") {
-      new import_obsidian8.Setting(containerEl).setName("AI model").setDesc("The managed default is recommended for routine proofreading. Changing models can change wording and response time.").addDropdown((dropdown) => {
-        dropdown.addOption(DEFAULT_MODEL, "Recommended (managed default)").addOption("openai/gpt-5-mini", "GPT-5 Mini");
-        if (![DEFAULT_MODEL, "openai/gpt-5-mini"].includes(this.plugin.settings.model)) dropdown.addOption(this.plugin.settings.model, "Previously selected model");
-        dropdown.setValue(this.plugin.settings.model).onChange(async (value) => {
-          this.plugin.settings.model = value;
-          await this.plugin.saveSettings();
+    return diagnostics.guard("main.display_16", () => {
+      var _a;
+      const diagnosticAction24 = () => {
+        var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba;
+        const { containerEl } = this;
+        const diagnosticStage25 = (_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b.call(_a2, "settings.render.clear")) != null ? _c : (() => {
         });
-      });
-      new import_obsidian8.Setting(containerEl).setName("AI request queue").setDesc("Inspect progress or remove waiting corrections; the active request continues.").addButton((button) => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
-      this.plugin.support.addDiagnosticsSetting(containerEl);
-    }
-    containerEl.createEl("h3", { text: "Credits & billing" });
-    containerEl.createEl("p", {
-      text: "Corrections are metered by input characters. Each billing account gets a one-time 2,000-character starter allowance across linked installations; buy more below when you run out."
-    });
-    this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
-    this.plugin.refreshBillingCredits = () => this.renderCreditsSummary();
-    this.renderCreditsSummary();
-    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
-    addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
-    new import_obsidian8.Setting(containerEl).setName("Refresh balance").setDesc("Pull the latest purchased-credit balance from Constance.").addButton(
-      (button) => button.setButtonText("Refresh balance").onClick(async () => {
-        button.setDisabled(true);
-        button.setButtonText("Refreshing...");
-        try {
-          await syncPurchasedCreditsFromConstance(this.plugin, true);
-          this.renderCreditsSummary();
-        } catch (e) {
-          new import_obsidian8.Notice("Could not refresh balance. Please try again.");
-        } finally {
-          button.setDisabled(false);
-          button.setButtonText("Refresh balance");
+        containerEl.empty();
+        diagnosticStage25();
+        const diagnosticStage26 = (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.start) == null ? void 0 : _e.call(_d, "settings.render.help")) != null ? _f : (() => {
+        });
+        this.plugin.support.addHelpSetting(containerEl);
+        diagnosticStage26();
+        (_h = (_g = this.plugin.support).addDebugSetting) == null ? void 0 : _h.call(_g, containerEl);
+        const diagnosticStage27 = (_k = (_j = (_i = diagnostics) == null ? void 0 : _i.start) == null ? void 0 : _j.call(_i, "settings.render.stage_1")) != null ? _k : (() => {
+        });
+        containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
+        diagnosticStage27();
+        const diagnosticStage28 = (_n = (_m = (_l = diagnostics) == null ? void 0 : _l.start) == null ? void 0 : _m.call(_l, "settings.render.settings_mode")) != null ? _n : (() => {
+        });
+        new import_obsidian9.Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday controls. Advanced adds customization and troubleshooting.").addDropdown((dropdown) => dropdown.addOption("simple", "Simple").addOption("advanced", "Advanced \u2014 optional").setValue(this.plugin.settings.settingsMode).onChange(async (value) => {
+          return diagnostics.guard("main.control_17", async () => {
+            var _a3, _b2, _c2, _d2, _e2;
+            const diagnosticEnd43 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.settings_mode.onChange")) != null ? _c2 : (() => {
+            });
+            try {
+              this.plugin.settings.settingsMode = value === "advanced" ? "advanced" : "simple";
+              await this.plugin.saveSettings();
+              this.display();
+            } catch (diagnosticError43) {
+              (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "control.settings_mode.onChange", diagnosticError43);
+              throw diagnosticError43;
+            } finally {
+              diagnosticEnd43();
+            }
+          });
+        }));
+        diagnosticStage28();
+        const diagnosticStage29 = (_q = (_p = (_o = diagnostics) == null ? void 0 : _o.start) == null ? void 0 : _p.call(_o, "settings.render.stage_2")) != null ? _q : (() => {
+        });
+        containerEl.createEl("h3", { text: "Getting started" });
+        diagnosticStage29();
+        const diagnosticStage30 = (_t = (_s = (_r = diagnostics) == null ? void 0 : _r.start) == null ? void 0 : _s.call(_r, "settings.render.stage_3")) != null ? _t : (() => {
+        });
+        containerEl.createEl("p", {
+          text: "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo."
+        });
+        diagnosticStage30();
+        const diagnosticStage31 = (_w = (_v = (_u = diagnostics) == null ? void 0 : _u.start) == null ? void 0 : _v.call(_u, "settings.render.review_before_applying")) != null ? _w : (() => {
+        });
+        new import_obsidian9.Setting(containerEl).setName("Review before applying").setDesc("Review the original and corrected text before applying changes. Off by default.").addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+          return diagnostics.guard("main.control_18", async () => {
+            var _a3, _b2, _c2, _d2, _e2;
+            const diagnosticEnd44 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.review_before_applying.onChange")) != null ? _c2 : (() => {
+            });
+            try {
+              this.plugin.settings.reviewBeforeApply = value;
+              await this.plugin.saveSettings();
+            } catch (diagnosticError44) {
+              (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "control.review_before_applying.onChange", diagnosticError44);
+              throw diagnosticError44;
+            } finally {
+              diagnosticEnd44();
+            }
+          });
+        }));
+        diagnosticStage31();
+        const diagnosticStage32 = (_z = (_y = (_x = diagnostics) == null ? void 0 : _x.start) == null ? void 0 : _y.call(_x, "settings.render.stage_4")) != null ? _z : (() => {
+        });
+        containerEl.createEl("p", {
+          text: "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted."
+        });
+        diagnosticStage32();
+        const diagnosticStage33 = (_C = (_B = (_A = diagnostics) == null ? void 0 : _A.start) == null ? void 0 : _B.call(_A, "settings.render.ai_model")) != null ? _C : (() => {
+        });
+        if (this.plugin.settings.settingsMode === "advanced") {
+          new import_obsidian9.Setting(containerEl).setName("AI model").setDesc("The AI model is selected automatically.");
+          new import_obsidian9.Setting(containerEl).setName("AI request queue").setDesc("Inspect progress or remove waiting corrections; the active request continues.").addButton((button) => button.setButtonText("Show queue").onClick(() => {
+            return diagnostics.guard("main.control_19", () => {
+              var _a3;
+              const diagnosticAction45 = () => this.plugin.aiQueue.open();
+              return ((_a3 = diagnostics) == null ? void 0 : _a3.run) ? diagnostics.run("control.ai_request_queue.onClick", diagnosticAction45) : diagnosticAction45();
+            });
+          }));
+          this.plugin.support.addDiagnosticsSetting(containerEl);
         }
-      })
-    );
-    void syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary()).catch(() => {
+        diagnosticStage33();
+        const diagnosticStage34 = (_F = (_E = (_D = diagnostics) == null ? void 0 : _D.start) == null ? void 0 : _E.call(_D, "settings.render.stage_5")) != null ? _F : (() => {
+        });
+        containerEl.createEl("h3", { text: "Credits & billing" });
+        diagnosticStage34();
+        const diagnosticStage35 = (_I = (_H = (_G = diagnostics) == null ? void 0 : _G.start) == null ? void 0 : _H.call(_G, "settings.render.stage_6")) != null ? _I : (() => {
+        });
+        containerEl.createEl("p", {
+          text: "Each corrected input character uses one credit. Each account includes 2,000 free characters on the account, shared across installations. Purchase more credits below."
+        });
+        diagnosticStage35();
+        const diagnosticStage36 = (_L = (_K = (_J = diagnostics) == null ? void 0 : _J.start) == null ? void 0 : _K.call(_J, "settings.render.stage_7")) != null ? _L : (() => {
+        });
+        this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
+        diagnosticStage36();
+        const diagnosticStage37 = (_O = (_N = (_M = diagnostics) == null ? void 0 : _M.start) == null ? void 0 : _N.call(_M, "settings.render.stage_8")) != null ? _O : (() => {
+        });
+        this.plugin.refreshBillingCredits = () => this.renderCreditsSummary();
+        diagnosticStage37();
+        const diagnosticStage38 = (_R = (_Q = (_P = diagnostics) == null ? void 0 : _P.start) == null ? void 0 : _Q.call(_P, "settings.render.stage_9")) != null ? _R : (() => {
+        });
+        this.renderCreditsSummary();
+        diagnosticStage38();
+        const diagnosticStage39 = (_U = (_T = (_S = diagnostics) == null ? void 0 : _S.start) == null ? void 0 : _T.call(_S, "settings.render.account")) != null ? _U : (() => {
+        });
+        addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+        diagnosticStage39();
+        const diagnosticStage40 = (_X = (_W = (_V = diagnostics) == null ? void 0 : _V.start) == null ? void 0 : _W.call(_V, "settings.render.stage_10")) != null ? _X : (() => {
+        });
+        addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
+        diagnosticStage40();
+        const diagnosticStage41 = (__ = (_Z = (_Y = diagnostics) == null ? void 0 : _Y.start) == null ? void 0 : _Z.call(_Y, "settings.render.refresh_balance")) != null ? __ : (() => {
+        });
+        new import_obsidian9.Setting(containerEl).setName("Refresh balance").setDesc("Update your free and purchased credit balance.").addButton(
+          (button) => button.setButtonText("Refresh balance").onClick(async () => {
+            return diagnostics.guard("main.control_20", async () => {
+              var _a3, _b2, _c2, _d2, _e2;
+              const diagnosticEnd46 = (_c2 = (_b2 = (_a3 = diagnostics) == null ? void 0 : _a3.start) == null ? void 0 : _b2.call(_a3, "control.refresh_balance.onClick")) != null ? _c2 : (() => {
+              });
+              try {
+                button.setDisabled(true);
+                button.setButtonText("Refreshing...");
+                try {
+                  await syncPurchasedCreditsFromConstance(this.plugin, true);
+                  this.renderCreditsSummary();
+                } catch (caughtError21) {
+                  diagnostics.failure("main.caught_22", caughtError21);
+                  new import_obsidian9.Notice("Could not refresh balance. Please try again.");
+                } finally {
+                  button.setDisabled(false);
+                  button.setButtonText("Refresh balance");
+                }
+              } catch (diagnosticError46) {
+                (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.failure) == null ? void 0 : _e2.call(_d2, "control.refresh_balance.onClick", diagnosticError46);
+                throw diagnosticError46;
+              } finally {
+                diagnosticEnd46();
+              }
+            });
+          })
+        );
+        diagnosticStage41();
+        const diagnosticStage42 = (_ba = (_aa = (_$ = diagnostics) == null ? void 0 : _$.start) == null ? void 0 : _aa.call(_$, "settings.render.stage_11")) != null ? _ba : (() => {
+        });
+        void diagnostics.guard("main.background_23", () => syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary()).catch((rejectedError5) => {
+          diagnostics.failure("main.rejected_6", rejectedError5);
+        }));
+        diagnosticStage42();
+      };
+      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("settings.open", diagnosticAction24) : diagnosticAction24();
     });
   }
   renderCreditsSummary() {
-    if (!this.creditsSummaryEl) {
-      return;
+    var _a;
+    const diagnosticAction47 = () => {
+      if (!this.creditsSummaryEl) {
+        return;
+      }
+      const { freeCredits, purchasedCredits } = this.plugin.settings;
+      const totalChars = freeCredits + purchasedCredits;
+      this.creditsSummaryEl.setText(
+        `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`
+      );
+    };
+    return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("main.renderCreditsSummary", diagnosticAction47) : diagnosticAction47();
+  }
+  hide() {
+    var _a, _b, _c;
+    const end = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "settings.close")) != null ? _c : (() => {
+    });
+    try {
+      super.hide();
+    } finally {
+      end();
     }
-    const { freeCredits, purchasedCredits } = this.plugin.settings;
-    const totalChars = freeCredits + purchasedCredits;
-    this.creditsSummaryEl.setText(
-      `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`
-    );
   }
 };

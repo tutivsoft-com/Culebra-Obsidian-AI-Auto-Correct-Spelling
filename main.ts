@@ -1,3 +1,5 @@
+import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
+import { diagnostics } from "./diagnostics";
 import { consumeAccountUnits } from "./account-credit-client";
 import { showAccountWelcome } from "./constance-account";
 import { resumeAccountCheckout } from "./billing-checkout";
@@ -64,8 +66,11 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
 }
 
 async function decryptSecretEnvelope(envelope: EncryptedSecretEnvelope, passphrase: string): Promise<string> {
+const diagnosticEnd1 = diagnostics?.start?.("main.decryptSecretEnvelope") ?? (() => {});
+try {
+
   if (envelope.x !== "AES-256-GCM" || envelope.w !== "PBKDF2-HMAC-SHA256") {
-    throw new Error(`Unsupported manifest envelope algorithm/kdf: ${envelope.x} / ${envelope.w}`);
+    throw new Error(`The AI connection could not be initialized. Update the plugin or contact support.`);
   }
 
   const keyMaterial = await window.crypto.subtle.importKey(
@@ -101,7 +106,9 @@ async function decryptSecretEnvelope(envelope: EncryptedSecretEnvelope, passphra
     ciphertextAndTag,
   );
 
-  return new TextDecoder().decode(plaintext);
+  return await (new TextDecoder().decode(plaintext));
+
+} catch (diagnosticError1) { diagnostics?.failure?.("main.decryptSecretEnvelope", diagnosticError1); throw diagnosticError1; } finally { diagnosticEnd1(); }
 }
 
 function selectSlot(manifest: RemoteKeyManifest, wantState: "active" | "next"): RemoteKeySlot | null {
@@ -116,21 +123,30 @@ function selectSlot(manifest: RemoteKeyManifest, wantState: "active" | "next"): 
 }
 
 async function fetchRemoteManifest(url: string): Promise<RemoteKeyManifest> {
-  const response = await requestUrl({ url, method: "GET", throw: false });
+const diagnosticEnd2 = diagnostics?.start?.("main.fetchRemoteManifest") ?? (() => {});
+try {
+
+  const response = await (diagnostics?.request?.("network.main.fetchRemoteManifest", requestUrl, { url, method: "GET", throw: false }) ?? requestUrl({ url, method: "GET", throw: false }));
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Manifest fetch failed: HTTP ${response.status}`);
+    throw new Error(`The AI connection is unavailable. Check your connection and try again.`);
   }
-  return response.json as RemoteKeyManifest;
+  return await (response.json as RemoteKeyManifest);
+
+} catch (diagnosticError2) { diagnostics?.failure?.("main.fetchRemoteManifest", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 }
 
 async function tryDecryptManifestKey(manifest: RemoteKeyManifest, source: string): Promise<string> {
+const diagnosticEnd3 = diagnostics?.start?.("main.tryDecryptManifestKey") ?? (() => {});
+try {
+
   const active = selectSlot(manifest, "active");
   if (active) {
     try {
       const key = (await decryptSecretEnvelope(active.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
-      if (key) return key;
+      if (key) return await (key);
     } catch (error) {
-      console.warn("Culebra: active manifest slot failed to decrypt", source, error);
+diagnostics.failure("main.caught_extra_1", error);
+      diagnostics?.legacy?.("warn", "main.culebra_active_manifest_slot_failed_to_decrypt");
     }
   }
 
@@ -138,13 +154,16 @@ async function tryDecryptManifestKey(manifest: RemoteKeyManifest, source: string
   if (next) {
     try {
       const key = (await decryptSecretEnvelope(next.v, REMOTE_MANIFEST_PASSPHRASE)).trim();
-      if (key) return key;
+      if (key) return await (key);
     } catch (error) {
-      console.warn("Culebra: next manifest slot failed to decrypt", source, error);
+diagnostics.failure("main.caught_extra_2", error);
+      diagnostics?.legacy?.("warn", "main.culebra_next_manifest_slot_failed_to_decrypt");
     }
   }
 
-  throw new Error("Remote key manifest did not decrypt to a usable key.");
+  throw new Error("The AI connection is unavailable. Check your connection and try again.");
+
+} catch (diagnosticError3) { diagnostics?.failure?.("main.tryDecryptManifestKey", diagnosticError3); throw diagnosticError3; } finally { diagnosticEnd3(); }
 }
 
 /**
@@ -153,12 +172,16 @@ async function tryDecryptManifestKey(manifest: RemoteKeyManifest, source: string
  * unreachable or fails to decrypt (key rotation / relocation support).
  */
 async function fetchRemoteApiKey(): Promise<string> {
+const diagnosticEnd4 = diagnostics?.start?.("main.fetchRemoteApiKey") ?? (() => {});
+try {
+
   try {
     const manifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL);
     return await tryDecryptManifestKey(manifest, REMOTE_MANIFEST_URL);
   } catch (primaryError) {
-    console.warn("Culebra: primary manifest failed, trying next-manifest fallback", primaryError);
-    const primaryManifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL).catch(() => null);
+diagnostics.failure("main.caught_extra_3", primaryError);
+    diagnostics?.legacy?.("warn", "main.culebra_primary_manifest_failed_trying_next_manifest_fallback");
+    const primaryManifest = await fetchRemoteManifest(REMOTE_MANIFEST_URL).catch((rejectedError1) => { diagnostics.failure("main.rejected_2", rejectedError1); return (null); });
     const nextUrl = primaryManifest?.n;
     if (nextUrl && nextUrl !== REMOTE_MANIFEST_URL) {
       const nextManifest = await fetchRemoteManifest(nextUrl);
@@ -166,6 +189,8 @@ async function fetchRemoteApiKey(): Promise<string> {
     }
     throw primaryError;
   }
+
+} catch (diagnosticError4) { diagnostics?.failure?.("main.fetchRemoteApiKey", diagnosticError4); throw diagnosticError4; } finally { diagnosticEnd4(); }
 }
 
 const SPELL_CORRECT_INSTRUCTIONS = `You are Culebra AI Spell Correct, a careful copy editor for an Obsidian Markdown vault.
@@ -203,6 +228,9 @@ function generateEventId(): string {
 }
 
 async function fetchConstanceEntitlements(plugin: CulebraSpellCorrectPlugin): Promise<any> {
+const diagnosticEnd5 = diagnostics?.start?.("main.fetchConstanceEntitlements") ?? (() => {});
+try {
+
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
   const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
   const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
@@ -215,9 +243,11 @@ async function fetchConstanceEntitlements(plugin: CulebraSpellCorrectPlugin): Pr
     await plugin.saveSettings();
   }
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Entitlement sync failed: HTTP ${response.status}`);
+    throw new Error(`Your account could not be updated. Check your connection and try again.`);
   }
-  return response.json?.data;
+  return await (response.json?.data);
+
+} catch (diagnosticError5) { diagnostics?.failure?.("main.fetchConstanceEntitlements", diagnosticError5); throw diagnosticError5; } finally { diagnosticEnd5(); }
 }
 
 type SpendResult =
@@ -226,6 +256,9 @@ type SpendResult =
   | { kind: "error" };
 
 async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: number, stableEventId: string): Promise<SpendResult> {
+const diagnosticEnd6 = diagnostics?.start?.("main.spendConstanceCredits") ?? (() => {});
+try {
+
   if (stableEventId.startsWith("consume_")) {
     const result = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
     if (result.kind === "ok") {
@@ -235,13 +268,18 @@ async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: 
     return { kind: result.kind === "insufficient" ? "insufficient" : "error" };
   }
   const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
-  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return result;
+  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return await (result);
   clearBillingSession(plugin.settings);
   await plugin.saveSettings();
   return { kind: "error" };
+
+} catch (diagnosticError6) { diagnostics?.failure?.("main.spendConstanceCredits", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
 }
 
 async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlugin, manual = false): Promise<void> {
+const diagnosticEnd7 = diagnostics?.start?.("main.syncPurchasedCreditsFromConstance") ?? (() => {});
+try {
+
   resumeAccountCheckout({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId,
     persist: () => plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(plugin), refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) });
 
@@ -251,18 +289,25 @@ async function syncPurchasedCreditsFromConstance(plugin: CulebraSpellCorrectPlug
   try {
     const entitlement = await fetchConstanceEntitlements(plugin);
     const serverBalance = (entitlement?.credits?.total_available ?? entitlement?.credits?.balance);
-    if (!Number.isFinite(serverBalance)) throw new Error("Billing returned an invalid balance");
-    plugin.settings.freeCredits = Math.max(0, Number(entitlement?.free_usage?.remaining) || 0);
+    const freeRemaining = entitlement?.free_usage?.remaining;
+    if (!Number.isFinite(serverBalance) || serverBalance < 0 || !Number.isFinite(freeRemaining) || freeRemaining < 0) throw new Error("Your balance could not be updated. Refresh it and try again.");
+    plugin.settings.freeCredits = freeRemaining;
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
     await plugin.saveSettings();
     plugin.refreshBillingCredits?.();
   } catch (error) {
+diagnostics.failure("main.caught_1", error);
     if (manual) throw error;
-    console.error("Culebra: Constance entitlement sync failed", error);
+    diagnostics?.legacy?.("error", "main.culebra_constance_entitlement_sync_failed");
   }
+
+} catch (diagnosticError7) { diagnostics?.failure?.("main.syncPurchasedCreditsFromConstance", diagnosticError7); throw diagnosticError7; } finally { diagnosticEnd7(); }
 }
 
 async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promise<void> {
+const diagnosticEnd8 = diagnostics?.start?.("main.retryPendingSpendEvents") ?? (() => {});
+try {
+
   const pending = [...(plugin.settings.pendingSpendEvents ?? [])];
   for (const event of pending) {
     if (event.kind === "free") {
@@ -280,16 +325,21 @@ async function retryPendingSpendEvents(plugin: CulebraSpellCorrectPlugin): Promi
     else plugin.settings.purchasedCredits = 0;
     await plugin.saveSettings();
   }
+
+} catch (diagnosticError8) { diagnostics?.failure?.("main.retryPendingSpendEvents", diagnosticError8); throw diagnosticError8; } finally { diagnosticEnd8(); }
 }
 
 async function checkBillingBeforeAi(plugin: CulebraSpellCorrectPlugin, amount: number): Promise<boolean> {
+const diagnosticEnd9 = diagnostics?.start?.("main.checkBillingBeforeAi") ?? (() => {});
+try {
+
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-    new Notice("Culebra: sign in or create a billing account in plugin settings before sending text to AI.");
+    new Notice("Culebra: sign in or create an account in plugin settings before sending text to AI.");
     return false;
   }
   await retryPendingSpendEvents(plugin);
   if (plugin.settings.pendingSpendEvents.length > 0) {
-    new Notice("Culebra: a previous credit spend is still being reconciled. No AI request was sent.");
+    new Notice("Culebra: a previous charge is still being confirmed. No AI request was sent.");
     return false;
   }
   try {
@@ -302,18 +352,22 @@ async function checkBillingBeforeAi(plugin: CulebraSpellCorrectPlugin, amount: n
     if (freeRemaining + paidBalance >= amount) return true;
     new Notice("Culebra: not enough free or purchased characters. No AI request was sent.");
     return false;
-  } catch {
+  } catch (caughtError2) {
+diagnostics.failure("main.caught_3", caughtError2);
     if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) {
-      new Notice("Culebra: your billing session expired. Sign in again before using AI.");
+      new Notice("Culebra: your session expired. Sign in again before using AI.");
     } else {
-      new Notice("Culebra: billing could not be verified. No AI request was sent.");
+      new Notice("Culebra: your account could not be verified. No AI request was sent.");
     }
     return false;
   }
+
+} catch (diagnosticError9) { diagnostics?.failure?.("main.checkBillingBeforeAi", diagnosticError9); throw diagnosticError9; } finally { diagnosticEnd9(); }
 }
 
 interface CulebraSettings {
   settingsMode: "simple" | "advanced";
+  debugLogging?: boolean;
   model: string;
   apiKey: string;
   constanceDeviceId: string;
@@ -338,6 +392,7 @@ interface CulebraSettings {
 
 const DEFAULT_SETTINGS: CulebraSettings = {
   settingsMode: "simple",
+  debugLogging: false,
   model: DEFAULT_MODEL,
   apiKey: "",
   constanceDeviceId: "",
@@ -367,19 +422,31 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
   private remoteApiKeyCache: string | null = null;
 
   private async resolveApiKey(): Promise<string> {
+const diagnosticEnd10 = diagnostics?.start?.("main.resolveApiKey") ?? (() => {});
+try {
+
     if (this.remoteApiKeyCache) {
-      return this.remoteApiKeyCache;
+      return await (this.remoteApiKeyCache);
     }
     const key = await fetchRemoteApiKey();
     this.remoteApiKeyCache = key;
-    return key;
-  }
+    return await (key);
+
+} catch (diagnosticError10) { diagnostics?.failure?.("main.resolveApiKey", diagnosticError10); throw diagnosticError10; } finally { diagnosticEnd10(); }
+}
 
   async onload() {
-    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct selected text or an entire note with a one-action AI workflow.", quickStart: ["Sign in to billing in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy debug log before reporting a problem.", "Confirm the note is editable and the billing account is linked."] });
+let diagnosticStartupEnd: () => void = () => {};
+
+const diagnosticEnd11 = diagnostics?.start?.("main.onload") ?? (() => {});
+try {
+
+    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct spelling, grammar, and punctuation in selected text or a note.", quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."] });
     this.support.start();
     await this.loadSettings();
-    this.aiQueue = new AiRequestQueue(this.app, "Culebra");
+diagnosticStartupEnd = diagnostics?.start?.("startup.initialize") ?? (() => {});
+
+    this.aiQueue = new AiRequestQueue(this.app, "Culebra", () => this.support.automaticWindowsEnabled());
     await showAccountWelcome(this, this.settings, () => this.saveSettings());
 
     if (!this.settings.constanceDeviceId) {
@@ -402,20 +469,31 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor: Editor) => {
+return diagnostics.guard("main.event_4", () => {
         const hasSelection = editor.getSelection().trim().length > 0;
         menu.addItem((item) => {
           item
             .setTitle(hasSelection ? "Culebra: Correct selected text" : "Culebra: Correct current note")
             .setIcon("spell-check")
             .onClick(() => {
-              void this.correctEditorText(editor);
-            });
+return diagnostics.guard("main.control_5", () => {
+const diagnosticAction12 = () => {
+
+              void diagnostics.guard("main.background_6", () => (this.correctEditorText(editor)));
+
+}; return diagnostics?.run ? diagnostics.run("control.18393.onClick", diagnosticAction12) : diagnosticAction12();
+
+});
+});
         });
-      }),
+
+});
+}),
     );
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
+return diagnostics.guard("main.event_7", () => {
         if (!(file instanceof TFile) || file.extension !== "md") {
           return;
         }
@@ -425,10 +503,19 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
             .setTitle("Culebra: Correct this Markdown file")
             .setIcon("spell-check")
             .onClick(() => {
-              void this.correctFile(file);
-            });
+return diagnostics.guard("main.control_8", () => {
+const diagnosticAction13 = () => {
+
+              void diagnostics.guard("main.background_9", () => (this.correctFile(file)));
+
+}; return diagnostics?.run ? diagnostics.run("control.18843.onClick", diagnosticAction13) : diagnosticAction13();
+
+});
+});
         });
-      }),
+
+});
+}),
     );
 
     this.addCommand({
@@ -438,12 +525,25 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     });
     this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
 
+    registerSelectionAction(this, { name: "Culebra: Correct selected notes", icon: "spell-check", accepts: markdownFile, folders: true,
+      run: async files => {
+        new Notice(`Culebra: correcting ${files.length} note(s).`);
+        let failed = 0;
+        for (const file of files) { try { await this.correctFile(file); } catch { failed++; } }
+        new Notice(`Culebra: selection finished; ${failed} failed.`);
+      } });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
+    this.support.showWelcome();
     // Background balance sync; never blocks load, fails silently offline.
-    void syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this));
-  }
+    void diagnostics.guard("main.background_10", () => (syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this))));
+
+} catch (diagnosticError11) { diagnostics?.failure?.("main.onload", diagnosticError11); throw diagnosticError11; } finally { diagnosticStartupEnd();  diagnostics?.legacy?.("info", "startup.finished"); diagnosticEnd11(); }
+}
 
   async loadSettings() {
+const diagnosticEnd14 = diagnostics?.start?.("main.loadSettings") ?? (() => {});
+try {
+
     const savedSettings = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
     this.settings.settingsMode = this.settings.settingsMode === "advanced" ? "advanced" : "simple";
@@ -454,24 +554,39 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     if (savedSettings && typeof savedSettings.onboardingSeen !== "boolean") {
       this.settings.onboardingSeen = true;
     }
-  }
+
+} catch (diagnosticError14) { diagnostics?.failure?.("main.loadSettings", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); }
+}
 
   async saveSettings() {
+const diagnosticEnd15 = diagnostics?.start?.("main.saveSettings") ?? (() => {});
+try {
+
     await this.saveData(this.settings);
-  }
+
+} catch (diagnosticError15) { diagnostics?.failure?.("main.saveSettings", diagnosticError15); throw diagnosticError15; } finally { diagnosticEnd15(); }
+}
 
   private pollAfterCheckout(checkoutId?: string) {
     let attempts = 0;
     const intervalId = window.setInterval(() => {
+return diagnostics.guard("main.timer_11", () => {
       attempts += 1;
-      void (async () => {
+      void diagnostics.guard("main.background_12", () => ((async () => {
+const diagnosticEnd16 = diagnostics?.start?.("main.background.20331") ?? (() => {});
+try {
+
         const settled = checkoutId
-          ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch(() => false)
+          ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch((rejectedError3) => { diagnostics.failure("main.rejected_4", rejectedError3); return (false); })
           : false;
         if (settled || !checkoutId) await syncPurchasedCreditsFromConstance(this);
         if (settled || attempts >= 6) window.clearInterval(intervalId);
-      })();
-    }, 15000);
+
+} catch (diagnosticError16) { diagnostics?.failure?.("main.background.20331", diagnosticError16); throw diagnosticError16; } finally { diagnosticEnd16(); }
+})()));
+
+});
+}, 15000);
   }
 
    /**
@@ -481,14 +596,17 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     * server gives an authoritative result.
     */
   private async chargeOneCredit(textLength: number): Promise<boolean> {
+const diagnosticEnd17 = diagnostics?.start?.("main.chargeOneCredit") ?? (() => {});
+try {
+
     const cost = Math.max(1, Math.ceil(textLength));
     if (!this.settings.billingAccessToken || !this.settings.billingAccountLinked) {
-      new Notice("Culebra: sign in or create a billing account in plugin settings before correcting text.");
+      new Notice("Culebra: sign in or create an account in plugin settings before correcting text.");
       return false;
     }
     await retryPendingSpendEvents(this);
     if (this.settings.pendingSpendEvents.length > 0) {
-      new Notice("Culebra: a previous billing operation is still being reconciled. No correction was applied.");
+      new Notice("Culebra: a previous charge is still being confirmed. No correction was applied.");
       return false;
     }
     const stableEventId = `consume_${generateEventId()}`;
@@ -496,8 +614,9 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     try {
       await this.saveSettings();
     } catch (error) {
+diagnostics.failure("main.caught_13", error);
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
-      console.error("Culebra: could not persist pending credit spend", error);
+      diagnostics?.legacy?.("error", "main.culebra_could_not_persist_pending_credit_spend");
       return false;
     }
     const result = await spendConstanceCredits(this, cost, stableEventId);
@@ -510,17 +629,22 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     if (result.kind === "insufficient") {
       this.settings.pendingSpendEvents = this.settings.pendingSpendEvents.filter((item) => item.eventId !== stableEventId);
       await this.saveSettings();
-      new Notice("Culebra: out of characters. Review current one-time offers in plugin settings.");
+      new Notice("Culebra: no character credits remain. Add credits in plugin settings.");
       return false;
     }
 
-    console.warn("Culebra: credit spend is unknown; blocking until the persisted event can be reconciled.");
-    new Notice("Culebra: billing could not be verified. Retry after the connection is restored.");
+    diagnostics?.legacy?.("warn", "main.culebra_credit_spend_is_unknown_blocking_until_the_persisted_even");
+    new Notice("Culebra: your account could not be verified. Retry after the connection is restored.");
     return false;
-  }
+
+} catch (diagnosticError17) { diagnostics?.failure?.("main.chargeOneCredit", diagnosticError17); throw diagnosticError17; } finally { diagnosticEnd17(); }
+}
 
    /** Correct the current selection, or the whole active note when no text is selected. */
    private async correctEditorText(editor: Editor) {
+const diagnosticEnd18 = diagnostics?.start?.("main.correctEditorText") ?? (() => {});
+try {
+
     const selection = editor.getSelection();
     const hasSelection = selection.trim().length > 0;
     const originalText = hasSelection ? selection : editor.getValue();
@@ -554,10 +678,15 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
     }
 
     new Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
-  }
+
+} catch (diagnosticError18) { diagnostics?.failure?.("main.correctEditorText", diagnosticError18); throw diagnosticError18; } finally { diagnosticEnd18(); }
+}
 
    /** Replace a Markdown file after optional Settings-based before/after review. */
    private async correctFile(file: TFile) {
+const diagnosticEnd19 = diagnostics?.start?.("main.correctFile") ?? (() => {});
+try {
+
     const originalText = await this.app.vault.read(file);
     const correctedText = await this.correctText(originalText, file.name);
 
@@ -583,33 +712,42 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
 
     await this.app.vault.modify(file, correctedText);
     new Notice(`Culebra corrected ${file.name}.`);
-  }
+
+} catch (diagnosticError19) { diagnostics?.failure?.("main.correctFile", diagnosticError19); throw diagnosticError19; } finally { diagnosticEnd19(); }
+}
 
    /** Ask the configured provider for corrected text without mutating the vault. */
    private async correctText(originalText: string, targetLabel: string) {
+const diagnosticEnd20 = diagnostics?.start?.("main.correctText") ?? (() => {});
+try {
+
     if (!originalText.trim()) {
       new Notice("Culebra found no text to correct.");
       return null;
     }
 
     const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report) => {
-      report({ label: "Checking billing eligibility", submittedText: originalText });
+const diagnosticEnd21 = diagnostics?.start?.("main.background.26150") ?? (() => {});
+try {
+
+      report({ label: "Checking available credits", submittedText: originalText });
       const cost = Math.max(1, Math.ceil(originalText.length));
       if (!(await checkBillingBeforeAi(this, cost))) return null;
 
       let apiKey: string;
       try {
-        report({ label: "Resolving OpenRouter connection", submittedText: originalText });
+        report({ label: "Connecting to AI", submittedText: originalText });
         apiKey = await this.resolveApiKey();
       } catch (error) {
-        console.error("Culebra: failed to resolve an OpenRouter API key", error);
+diagnostics.failure("main.caught_extra_4", error);
+        diagnostics?.legacy?.("error", "main.culebra_failed_to_resolve_an_openrouter_api_key");
         new Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
         return null;
       }
 
       try {
-        report({ label: "Sending text to OpenRouter", submittedText: originalText });
-        const response = await requestUrl({
+        report({ label: "Processing text", submittedText: originalText });
+        const response = await (diagnostics?.request?.("network.main.correctText", requestUrl, {
           url: OPENROUTER_CHAT_COMPLETIONS_URL,
           method: "POST",
           headers: {
@@ -624,11 +762,26 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
             ],
           }),
           throw: false,
-        });
+        }) ?? requestUrl({
+          url: OPENROUTER_CHAT_COMPLETIONS_URL,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: DEFAULT_MODEL,
+            messages: [
+              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+              { role: "user", content: originalText },
+            ],
+          }),
+          throw: false,
+        }));
 
         if (response.status < 200 || response.status >= 300) {
-          console.error("Culebra AI Spell Correct failed", response.status, response.text);
-          new Notice("Culebra correction failed. Check the developer console.");
+          diagnostics?.legacy?.("error", "main.culebra_ai_spell_correct_failed");
+          new Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
           return null;
         }
 
@@ -637,15 +790,20 @@ export default class CulebraSpellCorrectPlugin extends Plugin {
           new Notice("Culebra received an empty response; no changes made.");
           return null;
         }
-        return correctedText;
+        return await (correctedText);
       } catch (error) {
-        console.error("Culebra AI Spell Correct failed", error);
-        new Notice("Culebra correction failed. Check the developer console.");
+diagnostics.failure("main.caught_extra_5", error);
+        diagnostics?.legacy?.("error", "main.culebra_ai_spell_correct_failed");
+        new Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
         return null;
       }
-    });
-    return queued.status === "completed" ? queued.value : null;
-  }
+
+} catch (diagnosticError21) { diagnostics?.failure?.("main.background.26150", diagnosticError21); throw diagnosticError21; } finally { diagnosticEnd21(); }
+});
+    return await (queued.status === "completed" ? queued.value : null);
+
+} catch (diagnosticError20) { diagnostics?.failure?.("main.correctText", diagnosticError20); throw diagnosticError20; } finally { diagnosticEnd20(); }
+}
 }
 
 class CorrectionReviewModal extends Modal {
@@ -654,17 +812,31 @@ class CorrectionReviewModal extends Modal {
   constructor(app: CulebraSpellCorrectPlugin["app"], private target: string, private before: string, private after: string) { super(app); }
   waitForResult(): Promise<boolean> { this.open(); return new Promise((resolve) => { this.resolveResult = resolve; }); }
   onOpen() {
+return diagnostics.guard("main.onOpen_14", () => {
+const diagnosticAction22 = () => {
+
     this.contentEl.createEl("h2", { text: `Review correction: ${this.target}` });
     const diff = this.contentEl.createEl("pre", { text: `BEFORE\n${this.before}\n\nAFTER\n${this.after}` });
     diff.style.whiteSpace = "pre-wrap";
     diff.style.maxHeight = "55vh";
     diff.style.overflow = "auto";
     const actions = this.contentEl.createDiv();
-    actions.createEl("button", { text: "Cancel" }).onclick = () => this.finish(false);
-    actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = () => this.finish(true);
-  }
+    actions.createEl("button", { text: "Cancel" }).onclick = diagnostics.wrap("main.dom_1", () => this.finish(false));
+    actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = diagnostics.wrap("main.dom_2", () => this.finish(true));
+
+}; return diagnostics?.run ? diagnostics.run("main.onOpen", diagnosticAction22) : diagnosticAction22();
+
+});
+}
   private finish(approved: boolean) { if (this.settled) return; this.settled = true; this.resolveResult(approved); this.close(); }
-  onClose() { if (!this.settled) { this.settled = true; this.resolveResult(false); } this.contentEl.empty(); }
+  onClose() {
+return diagnostics.guard("main.onClose_15", () => {
+const diagnosticAction23 = () => {
+ if (!this.settled) { this.settled = true; this.resolveResult(false); } this.contentEl.empty();
+}; return diagnostics?.run ? diagnostics.run("main.onClose", diagnosticAction23) : diagnosticAction23();
+
+});
+}
 }
 
 function extractResponseText(responseJson: unknown): string {
@@ -696,77 +868,167 @@ class CulebraSettingTab extends PluginSettingTab {
   }
 
   display() {
+return diagnostics.guard("main.display_16", () => {
+const diagnosticAction24 = () => {
+
     const { containerEl } = this;
-    containerEl.empty();
+    const diagnosticStage25 = diagnostics?.start?.("settings.render.clear") ?? (() => {});
+containerEl.empty();
+diagnosticStage25();
+
+    const diagnosticStage26 = diagnostics?.start?.("settings.render.help") ?? (() => {});
+this.plugin.support.addHelpSetting(containerEl);
+diagnosticStage26();
+
+this.plugin.support.addDebugSetting?.(containerEl);
 
 
-    containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
 
-    new Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday controls. Advanced adds customization and troubleshooting.")
-      .addDropdown(dropdown => dropdown.addOption("simple", "Simple").addOption("advanced", "Advanced")
+    const diagnosticStage27 = diagnostics?.start?.("settings.render.stage_1") ?? (() => {});
+containerEl.createEl("h2", { text: "Culebra AI Spell Correct" });
+diagnosticStage27();
+
+
+    const diagnosticStage28 = diagnostics?.start?.("settings.render.settings_mode") ?? (() => {});
+new Setting(containerEl).setName("Settings mode").setDesc("Simple shows everyday controls. Advanced adds customization and troubleshooting.")
+      .addDropdown(dropdown => dropdown.addOption("simple", "Simple").addOption("advanced", "Advanced — optional")
         .setValue(this.plugin.settings.settingsMode).onChange(async value => {
+return diagnostics.guard("main.control_17", async () => {
+const diagnosticEnd43 = diagnostics?.start?.("control.settings_mode.onChange") ?? (() => {});
+try {
+
           this.plugin.settings.settingsMode = value === "advanced" ? "advanced" : "simple";
           await this.plugin.saveSettings(); this.display();
-        }));
-    containerEl.createEl("h3", { text: "Getting started" });
-    containerEl.createEl("p", {
+
+} catch (diagnosticError43) { diagnostics?.failure?.("control.settings_mode.onChange", diagnosticError43); throw diagnosticError43; } finally { diagnosticEnd43(); }
+
+});
+}));
+diagnosticStage28();
+
+    const diagnosticStage29 = diagnostics?.start?.("settings.render.stage_2") ?? (() => {});
+containerEl.createEl("h3", { text: "Getting started" });
+diagnosticStage29();
+
+    const diagnosticStage30 = diagnostics?.start?.("settings.render.stage_3") ?? (() => {});
+containerEl.createEl("p", {
       text:
         "Select text in a note, or leave the selection empty to correct the current note. Then choose Culebra from the editor menu, command palette, or a Markdown file's context menu. Culebra applies the correction immediately and supports Undo.",
     });
+diagnosticStage30();
 
-    new Setting(containerEl)
+
+    const diagnosticStage31 = diagnostics?.start?.("settings.render.review_before_applying") ?? (() => {});
+new Setting(containerEl)
       .setName("Review before applying")
-      .setDesc("Off by default for one-click corrections. Turn on to see a before/after review for each correction.")
-      .addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => { this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveSettings(); }));
-    containerEl.createEl("p", {
+      .setDesc("Review the original and corrected text before applying changes. Off by default.")
+      .addToggle((toggle) => toggle.setValue(this.plugin.settings.reviewBeforeApply).onChange(async (value) => {
+return diagnostics.guard("main.control_18", async () => {
+const diagnosticEnd44 = diagnostics?.start?.("control.review_before_applying.onChange") ?? (() => {});
+try {
+ this.plugin.settings.reviewBeforeApply = value; await this.plugin.saveSettings();
+} catch (diagnosticError44) { diagnostics?.failure?.("control.review_before_applying.onChange", diagnosticError44); throw diagnosticError44; } finally { diagnosticEnd44(); }
+
+});
+}));
+diagnosticStage31();
+
+    const diagnosticStage32 = diagnostics?.start?.("settings.render.stage_4") ?? (() => {});
+containerEl.createEl("p", {
       text:
         "Correction requests send only the text you explicitly choose to OpenRouter. Use Undo if a correction is not wanted.",
     });
-    if (this.plugin.settings.settingsMode === "advanced") {
-      new Setting(containerEl).setName("AI model").setDesc("The managed default is recommended for routine proofreading. Changing models can change wording and response time.")
-        .addDropdown(dropdown => {
-          dropdown.addOption(DEFAULT_MODEL, "Recommended (managed default)").addOption("openai/gpt-5-mini", "GPT-5 Mini");
-          if (![DEFAULT_MODEL, "openai/gpt-5-mini"].includes(this.plugin.settings.model)) dropdown.addOption(this.plugin.settings.model, "Previously selected model");
-          dropdown.setValue(this.plugin.settings.model).onChange(async value => { this.plugin.settings.model = value; await this.plugin.saveSettings(); });
-        });
+diagnosticStage32();
+
+    const diagnosticStage33 = diagnostics?.start?.("settings.render.ai_model") ?? (() => {});
+if (this.plugin.settings.settingsMode === "advanced") {
+      new Setting(containerEl).setName("AI model").setDesc("The AI model is selected automatically.");
       new Setting(containerEl).setName("AI request queue").setDesc("Inspect progress or remove waiting corrections; the active request continues.")
-        .addButton(button => button.setButtonText("Show queue").onClick(() => this.plugin.aiQueue.open()));
+        .addButton(button => button.setButtonText("Show queue").onClick(() => {
+return diagnostics.guard("main.control_19", () => { const diagnosticAction45 = () => (this.plugin.aiQueue.open()); return diagnostics?.run ? diagnostics.run("control.ai_request_queue.onClick", diagnosticAction45) : diagnosticAction45();
+});
+}));
       this.plugin.support.addDiagnosticsSetting(containerEl);
     }
+diagnosticStage33();
 
-    containerEl.createEl("h3", { text: "Credits & billing" });
-    containerEl.createEl("p", {
+
+    const diagnosticStage34 = diagnostics?.start?.("settings.render.stage_5") ?? (() => {});
+containerEl.createEl("h3", { text: "Credits & billing" });
+diagnosticStage34();
+
+    const diagnosticStage35 = diagnostics?.start?.("settings.render.stage_6") ?? (() => {});
+containerEl.createEl("p", {
       text:
-        "Corrections are metered by input characters. Each billing account gets a one-time 2,000-character starter allowance across linked installations; buy more below when you run out.",
+        "Each corrected input character uses one credit. Each account includes 2,000 free characters on the account, shared across installations. Purchase more credits below.",
     });
+diagnosticStage35();
 
-    this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
-    this.plugin.refreshBillingCredits = () => this.renderCreditsSummary();
-    this.renderCreditsSummary();
 
-    addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+    const diagnosticStage36 = diagnostics?.start?.("settings.render.stage_7") ?? (() => {});
+this.creditsSummaryEl = containerEl.createEl("p", { cls: "culebra-credits-summary" });
+diagnosticStage36();
 
-    addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
+    const diagnosticStage37 = diagnostics?.start?.("settings.render.stage_8") ?? (() => {});
+this.plugin.refreshBillingCredits = () => this.renderCreditsSummary();
+diagnosticStage37();
 
-    new Setting(containerEl)
+    const diagnosticStage38 = diagnostics?.start?.("settings.render.stage_9") ?? (() => {});
+this.renderCreditsSummary();
+diagnosticStage38();
+
+
+    const diagnosticStage39 = diagnostics?.start?.("settings.render.account") ?? (() => {});
+addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+diagnosticStage39();
+
+
+    const diagnosticStage40 = diagnostics?.start?.("settings.render.stage_10") ?? (() => {});
+addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
+diagnosticStage40();
+
+
+    const diagnosticStage41 = diagnostics?.start?.("settings.render.refresh_balance") ?? (() => {});
+new Setting(containerEl)
       .setName("Refresh balance")
-      .setDesc("Pull the latest purchased-credit balance from Constance.")
+      .setDesc("Update your free and purchased credit balance.")
       .addButton((button) =>
         button.setButtonText("Refresh balance").onClick(async () => {
+return diagnostics.guard("main.control_20", async () => {
+const diagnosticEnd46 = diagnostics?.start?.("control.refresh_balance.onClick") ?? (() => {});
+try {
+
           button.setDisabled(true);
           button.setButtonText("Refreshing...");
           try { await syncPurchasedCreditsFromConstance(this.plugin, true); this.renderCreditsSummary(); }
-          catch { new Notice("Could not refresh balance. Please try again."); }
+          catch (caughtError21) {
+diagnostics.failure("main.caught_22", caughtError21); new Notice("Could not refresh balance. Please try again."); }
           finally { button.setDisabled(false); button.setButtonText("Refresh balance"); }
-        }),
+
+} catch (diagnosticError46) { diagnostics?.failure?.("control.refresh_balance.onClick", diagnosticError46); throw diagnosticError46; } finally { diagnosticEnd46(); }
+
+});
+}),
       );
+diagnosticStage41();
+
 
     // Sync on open so the summary reflects a purchase made since last time
     // Obsidian was open, without requiring a manual refresh click.
-    void syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary()).catch(() => {});
-  }
+    const diagnosticStage42 = diagnostics?.start?.("settings.render.stage_11") ?? (() => {});
+void diagnostics.guard("main.background_23", () => (syncPurchasedCreditsFromConstance(this.plugin).then(() => this.renderCreditsSummary()).catch((rejectedError5) => {
+diagnostics.failure("main.rejected_6", rejectedError5);})));
+diagnosticStage42();
+
+
+}; return diagnostics?.run ? diagnostics.run("settings.open", diagnosticAction24) : diagnosticAction24();
+
+});
+}
 
   private renderCreditsSummary() {
+const diagnosticAction47 = () => {
+
     if (!this.creditsSummaryEl) {
       return;
     }
@@ -775,5 +1037,9 @@ class CulebraSettingTab extends PluginSettingTab {
     this.creditsSummaryEl.setText(
       `Characters remaining: ${totalChars.toLocaleString()} (${freeCredits.toLocaleString()} free + ${purchasedCredits.toLocaleString()} purchased)`,
     );
-  }
+
+}; return diagnostics?.run ? diagnostics.run("main.renderCreditsSummary", diagnosticAction47) : diagnosticAction47();
+}
+
+  hide(): void { const end = diagnostics?.start?.("settings.close") ?? (() => {}); try { super.hide(); } finally { end(); } }
 }
