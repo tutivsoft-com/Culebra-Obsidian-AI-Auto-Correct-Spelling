@@ -1,28 +1,65 @@
 # Culebra AI Spell Correct
 
-Correct spelling, grammar and punctuation in selected text or a Markdown note while retaining its meaning and structure.
+Correct spelling, grammar and punctuation without leaving your Obsidian note.
 
-Current version: **4.4.62**.
+**Best for:** Obsidian users polishing notes, drafts and research text.
 
-## First use
+## Top 10 features
 
-Enable the plugin and use its settings page. Simple is the default settings mode; Advanced exposes optional configuration. Select text or open a Markdown note, then run Correct selection or current note.
+1. Correct selected text.
+2. Correct a whole Markdown note.
+3. Use the command palette.
+4. Use editor context-menu actions.
+5. Process supported file selections.
+6. Include folder descendants.
+7. Avoid repeated overlapping selections.
+8. Choose optional before-and-after review.
+9. Undo editor edits normally.
+10. See progress and account balance.
 
-The selected text or note is sent directly to OpenRouter. A changed correction can be applied directly; Review before applying enables a before/after window. Editor changes support the editor's normal Undo. The request queue serializes AI work.
+## Example workflow
 
-## Account and processing
+**Before:** A note reads: “The meeting are on Thrusday.”
 
-AI requests go directly to OpenRouter using the fixed request model `~openai/gpt-luna-latest`. The existing managed-key resolver supplies the connection; legacy personal-key/model preferences do not override it. Constance handles account and billing operations.
+**After:** Request a correction such as “The meeting is on Thursday,” with optional comparison before applying.
 
-Culebra meters original input characters using JavaScript UTF-16 string length. A changed correction accepted for application persists its event identity before account usage consumption. Unknown responses retry that same event.
+## Pricing
 
-Connect the existing Constance account in settings; registration can require email verification before signing in again. Billing account passwords are sent for authentication and are not persisted. Access/refresh session data and a stable installation identity are saved locally. Account free usage and purchased balance are determined by Constance; cached values and checkout return URLs do not create entitlement. Catalog displays current formatted names, prices, availability and exact price IDs. Unknown usage and checkout results retain their original identities for recovery.
+A connected account includes 2,000 characters as a one-time lifetime allowance. Previous use counts toward that allowance.
 
-## Diagnostics
+| Pack | USD price | Included units |
+|---|---:|---:|
+| Starter | $2.00 | 20,000 characters |
+| Standard | $4.00 | 60,000 characters |
+| Pro | $8.00 | 180,000 characters |
+| Ultimate | $14.00 | 450,000 characters |
 
-Help is available in settings and through Open documentation. Open plugin settings and Copy full debug log are command-palette fallbacks. Debug logging defaults off for a new installation; failures and full Error objects/stacks still appear in the local developer console. Timed information is enabled by the debug preference. The copyable diagnostic buffer keeps at most 1,000 summarized events and excludes raw error text, stacks, note text, paths and credentials. Full console exceptions can contain whatever the failed operation placed in its error. Logs are not uploaded automatically.
+Packs are one-time purchases. Purchased units do not expire. Final tax and local currency are shown at checkout.
 
-## Documentation
+## What to know
 
+Requested corrections send the chosen note text to an online AI service.
 
-License terms are in LICENSE.
+---
+
+## Discover Culebra AI Spell Correct
+
+Whether you need to correct selected text or correct a whole Markdown note, Culebra AI Spell Correct provides a focused workflow for Obsidian users polishing notes, drafts and research text.
+
+### Common questions
+
+**What can I use it for?**
+
+You can correct selected text, use editor context-menu actions or process supported file selections.
+
+**How do I get started?**
+
+Enable the plugin in Obsidian, open its settings and choose the action that fits your note. Connect your account for metered actions; the settings page shows your remaining allowance and available packs.
+
+### Search description
+
+Correct spelling, grammar and punctuation without leaving your Obsidian note. Designed for Obsidian users polishing notes, drafts and research text.
+
+### Related topics
+
+Obsidian spell checker, AI proofreading Obsidian, Markdown grammar correction, note correction.
