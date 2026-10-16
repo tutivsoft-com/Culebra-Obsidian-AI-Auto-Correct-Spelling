@@ -1,3 +1,4 @@
+import { initializeMatomo } from "./matomo-plugin";
 import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
 import { diagnostics } from "./diagnostics";
 import { consumeAccountUnits } from "./account-credit-client";
@@ -436,6 +437,7 @@ try {
 }
 
   async onload() {
+    initializeMatomo(this);
 let diagnosticStartupEnd: () => void = () => {};
 
 const diagnosticEnd11 = diagnostics?.start?.("main.onload") ?? (() => {});
