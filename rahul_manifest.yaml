@@ -1,0 +1,28 @@
+app_name: "Culebra-Obsidian-AI-Auto-Correct-Spelling"
+repo_name: "Culebra-Obsidian-AI-Auto-Correct-Spelling"
+account_origin: "tutivsoft-com"
+lifecycle_status: active
+version: "4.4.64"
+ai_model: unknown
+ai_model_confidence: low
+summary_1line: "Culebra Obsidian AI Auto Correct Spelling"
+secrets_status: preserved
+architecture_doc: architecture.md
+ai_model_doc: ai_model.md
+history_doc: HISTORY.md
+contributors_doc: CONTRIBUTORS.md
+uniform_entrypoint: start.sh
+
+repository_sync_20261016:
+  observed_at: "2026-10-16"
+  repository: "tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling"
+  visibility: "public"
+  default_branch: "main"
+  canonical_path: "C:\\Users\\Rahul\\Desktop\\ghrepos\\Culebra-Obsidian-AI-Auto-Correct-Spelling"
+  version: "4.4.64"
+  architecture_doc: "architecture.md"
+  ai_model_doc: "ai_model.md"
+  history_doc: "HISTORY.md"
+  contributors_doc: "CONTRIBUTORS.md"
+  entrypoint: "start.sh"
+  verification_scope: "Repository identity, metadata and static version carriers; build and live deployment not checked."
