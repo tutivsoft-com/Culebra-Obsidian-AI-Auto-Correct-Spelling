@@ -66,6 +66,6 @@ Obsidian spell checker, AI proofreading Obsidian, Markdown grammar correction, n
 
 ## Release
 
-Version 4.4.68 is prepared for manual publication.
+Version 4.4.68 was published on 17 October 2026. Its final Obsidian Community audit completed successfully. [Release assets](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases/tag/4.4.68).
 
 The plugin sends requested note text to OpenRouter. Account and purchase operations use Constance. Basic app usage events are sent to https://atcdn.cyou; these events do not contain note text.
