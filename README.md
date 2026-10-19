@@ -1,7 +1,5 @@
 # Culebra AI Spell Correct
 
-Private source **4.4.69** has a regenerated and locally validated build. The current Community release remains 4.4.68.
-
 Correct spelling, grammar and punctuation without leaving your Obsidian note.
 
 **Best for:** Obsidian users polishing notes, drafts and research text.
@@ -68,6 +66,6 @@ Obsidian spell checker, AI proofreading Obsidian, Markdown grammar correction, n
 
 ## Release
 
-Version 4.4.68 was published on 17 October 2026 with a Completed final Community audit. Private source 4.4.69 has a regenerated and locally validated build; no new Community release has been published.
+Version 4.4.68 was published on 17 October 2026. Its final Obsidian Community audit completed successfully. [Release assets](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases/tag/4.4.68).
 
 The plugin sends requested note text to OpenRouter. Account and purchase operations use Constance. Basic app usage events are sent to https://atcdn.cyou; these events do not contain note text.
