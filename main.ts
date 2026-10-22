@@ -1,3 +1,4 @@
+import { CONSTANCE_API, accountBalance } from "./constance-v2";
 import { initializeMatomo } from "./matomo-plugin";
 import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
 import { diagnostics } from "./diagnostics";
@@ -212,8 +213,7 @@ Hard rules:
 
 // --- Constance (TutivSoft) billing integration ---
 // One-time credit purchases only, no license keys. Authenticated Constance
-// account endpoints are used for balance reads, free-usage claims, spends, and
-// preferred catalog-code checkout; /buy is retained only as a fallback.
+// v2 endpoints provide account balances, durable usage operations and checkout.
 const CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 const CONSTANCE_APP_ID = "culebra-ai-spell-correct";
 function generateSecureDeviceId(): string {
@@ -235,7 +235,7 @@ try {
   if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
   const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
   const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
-    url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+    url: `${CONSTANCE_API}/billing/entitlements/me?${query.toString()}`,
     method: "GET",
     throw: false,
   });
@@ -246,7 +246,7 @@ try {
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Your account could not be updated. Check your connection and try again.`);
   }
-  return await (response.json?.data);
+  return accountBalance(response.json?.data, CONSTANCE_APP_ID);
 
 } catch (diagnosticError5) { diagnostics?.failure?.("main.fetchConstanceEntitlements", diagnosticError5); throw diagnosticError5; } finally { diagnosticEnd5(); }
 }
@@ -260,7 +260,7 @@ async function spendConstanceCredits(plugin: CulebraSpellCorrectPlugin, amount: 
 const diagnosticEnd6 = diagnostics?.start?.("main.spendConstanceCredits") ?? (() => {});
 try {
 
-  if (stableEventId.startsWith("consume_")) {
+  if (stableEventId.startsWith("v2consume_")) {
     const result = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
     if (result.kind === "ok") {
       plugin.settings.freeCredits = result.freeRemaining ?? plugin.settings.freeCredits;
@@ -268,10 +268,6 @@ try {
     }
     return { kind: result.kind === "insufficient" ? "insufficient" : "error" };
   }
-  const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
-  if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return await (result);
-  clearBillingSession(plugin.settings);
-  await plugin.saveSettings();
   return { kind: "error" };
 
 } catch (diagnosticError6) { diagnostics?.failure?.("main.spendConstanceCredits", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
@@ -282,9 +278,10 @@ const diagnosticEnd7 = diagnostics?.start?.("main.syncPurchasedCreditsFromConsta
 try {
 
   resumeAccountCheckout({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId,
-    persist: () => plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(plugin), refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) });
+    persist: () => plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(plugin, true), refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) });
 
   if (!plugin.settings.constanceDeviceId) {
+    if (manual) throw new Error("Connect your account before refreshing the balance.");
     return;
   }
   try {
@@ -295,6 +292,12 @@ try {
     plugin.settings.freeCredits = freeRemaining;
     plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
     await plugin.saveSettings();
+    const acknowledgement = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
+      url: CONSTANCE_API + "/billing/sync", method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_id: CONSTANCE_APP_ID, revision: entitlement.revision }), throw: false,
+    });
+    if (acknowledgement.status !== 200 || !Number.isSafeInteger(acknowledgement.json?.data?.recorded_revision) || acknowledgement.json.data.recorded_revision < entitlement.revision)
+      throw new Error("Your balance was saved but its acknowledgement is pending. Refresh again.");
     plugin.refreshBillingCredits?.();
   } catch (error) {
 diagnostics.failure("main.caught_1", error);
@@ -311,6 +314,7 @@ try {
 
   const pending = [...(plugin.settings.pendingSpendEvents ?? [])];
   for (const event of pending) {
+    if (!event.eventId.startsWith("v2consume_") || event.owner !== plugin.settings.billingEmail.trim().toLowerCase()) break;
     if (event.kind === "free") {
       const result = await claimAccountFreeUsage(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, event.eventId, event.amount);
       if (result.kind === "error" || result.kind === "auth-required") break;
@@ -377,6 +381,9 @@ interface CulebraSettings {
   billingRefreshToken: string;
   billingAccessExpiresAt: number;
   billingAccountLinked: boolean;
+  billingV2InstallationId?: string;
+  billingV2InstallationToken?: string;
+  billingV2InstallationOwner?: string;
   // Local mirror of the account-scoped free allowance returned by Constance.
   // It is never authoritative and starts at zero so reinstalling cannot
   // appear to grant a new local allowance.
@@ -386,7 +393,7 @@ interface CulebraSettings {
   purchasedCredits: number;
   // Free and paid events are written before their billing request. Unknown transport
   // outcomes stay here and are retried with the same event ID after restart.
-  pendingSpendEvents: Array<{ eventId: string; amount: number; kind?: "free" | "paid" }>;
+  pendingSpendEvents: Array<{ eventId: string; amount: number; kind?: "free" | "paid"; owner?: string }>;
   onboardingSeen: boolean;
   reviewBeforeApply: boolean;
 }
@@ -461,7 +468,7 @@ diagnosticStartupEnd = diagnostics?.start?.("startup.initialize") ?? (() => {});
     this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
     this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
     this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
-    this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
+    this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken) && Boolean(this.settings.billingV2InstallationId && this.settings.billingV2InstallationToken);
     await this.saveSettings();
 
     if (!this.settings.onboardingSeen) {
@@ -579,7 +586,7 @@ const diagnosticEnd16 = diagnostics?.start?.("main.background.20331") ?? (() => 
 try {
 
         const settled = checkoutId
-          ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch((rejectedError3) => { diagnostics.failure("main.rejected_4", rejectedError3); return (false); })
+          ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this, true) }, checkoutId).catch((rejectedError3) => { diagnostics.failure("main.rejected_4", rejectedError3); return (false); })
           : false;
         if (settled || !checkoutId) await syncPurchasedCreditsFromConstance(this);
         if (settled || attempts >= 6) window.clearInterval(intervalId);
@@ -611,8 +618,8 @@ try {
       new Notice("Culebra: a previous charge is still being confirmed. No correction was applied.");
       return false;
     }
-    const stableEventId = `consume_${generateEventId()}`;
-    this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+    const stableEventId = `v2consume_${generateEventId()}`;
+    this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost, owner: this.settings.billingEmail.trim().toLowerCase() });
     try {
       await this.saveSettings();
     } catch (error) {
@@ -981,12 +988,12 @@ diagnosticStage38();
 
 
     const diagnosticStage39 = diagnostics?.start?.("settings.render.account") ?? (() => {});
-addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin, true), refresh: () => this.display() });
 diagnosticStage39();
 
 
     const diagnosticStage40 = diagnostics?.start?.("settings.render.stage_10") ?? (() => {});
-addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
+addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin, true) });
 diagnosticStage40();
 
 

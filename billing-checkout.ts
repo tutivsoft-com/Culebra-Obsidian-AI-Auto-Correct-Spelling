@@ -1,12 +1,11 @@
 import { diagnostics } from "./diagnostics";
 import { Notice, requestUrl } from "obsidian";
+import { CONSTANCE_API } from "./constance-v2";
 
-interface PendingCheckout { key?: string; plan?: string; email?: string; checkoutId?: string; idempotency_key?: string; price_id?: string; checkout_id?: string; owner?: string; plan_code?: string }
+interface PendingCheckout { version?: number; key?: string; plan?: string; email?: string; checkoutId?: string; opened?: boolean; [key: string]: any }
 interface CheckoutState {
   billingEmail: string; billingAccessToken: string; billingRefreshToken: string; billingAccountLinked: boolean;
-  pendingAccountCheckout?: PendingCheckout | null;
-  pendingPriceCheckout?: PendingCheckout; pendingPaddleCheckout?: PendingCheckout; previewPendingCheckout?: PendingCheckout;
-  [key: string]: any;
+  pendingAccountCheckout?: PendingCheckout | null; [key: string]: any;
 }
 export interface CheckoutHost {
   state: CheckoutState; appId: string; installationId: string;
@@ -14,124 +13,129 @@ export interface CheckoutHost {
 }
 const running = new WeakMap<object, Promise<void>>();
 const timers = new WeakMap<object, ReturnType<typeof setTimeout>>();
-
-async function send(host: CheckoutHost, path: string, method: "GET" | "POST", body?: unknown, key?: string): Promise<any> {
-const diagnosticEnd1 = diagnostics?.start?.("billing-checkout.send") ?? (() => {});
-try {
-
-  const request = () => (diagnostics?.request?.("network.billing-checkout.send", requestUrl, { url: `https://app.tutivsoft.com/api/v1/billing/${path}`, method, throw: false,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...(key ? { "Idempotency-Key": key } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}) }) ?? requestUrl({ url: `https://app.tutivsoft.com/api/v1/billing/${path}`, method, throw: false,
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...(key ? { "Idempotency-Key": key } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}) }));
+const owner = (host: CheckoutHost) => host.state.billingEmail.trim().toLowerCase();
+function legacyPending(host: CheckoutHost): boolean {
+  return ["pendingPriceCheckout", "pendingPaddleCheckout", "previewPendingCheckout"].some(key => !!host.state[key])
+    || !!host.state.pendingAccountCheckout && host.state.pendingAccountCheckout.version !== 2;
+}
+async function send(host: CheckoutHost, path: string, body?: unknown): Promise<any> {
+  const originalOwner = owner(host);
+  const request = () => !host.state.billingAccountLinked || owner(host) !== originalOwner ? Promise.resolve({ status: 401 }) : requestUrl({ url: `${CONSTANCE_API}${path}`, method: body ? "POST" : "GET", throw: false,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
   let response = await request();
   if (response.status === 401 && await host.refreshSession()) response = await request();
-  return await (response);
-
-} catch (diagnosticError1) { diagnostics?.failure?.("billing-checkout.send", diagnosticError1); throw diagnosticError1; } finally { diagnosticEnd1(); }
+  return response;
 }
-
 export function resumeAccountCheckout(host: CheckoutHost): void {
-  const entry = findPending(host.state);
-  if (!entry || !host.state.billingAccountLinked || pendingOwner(entry.pending) !== host.state.billingEmail || timers.has(host.state)) return;
+  const pending = host.state.pendingAccountCheckout;
+  if (!pending || legacyPending(host) || !host.state.billingAccountLinked || pending.email !== owner(host) || timers.has(host.state)) return;
   const timer = setTimeout(() => {
-return diagnostics.guard("billing-checkout.timer_1", () => {
     timers.delete(host.state);
     if (running.has(host.state)) { resumeAccountCheckout(host); return; }
-    const operation = recover(host);
+    const operation = recoverAccountCheckout(host);
     running.set(host.state, operation);
-    void diagnostics.guard("billing-checkout.background_2", () => (operation.catch((rejectedError1) => { diagnostics.failure("billing-checkout.rejected_2", rejectedError1); return (undefined); }).finally(() => { running.delete(host.state); resumeAccountCheckout(host); })));
-
-});
-}, 15000);
+    void operation.catch(error => diagnostics.failure("billing-checkout.recover", error)).finally(() => { running.delete(host.state); resumeAccountCheckout(host); });
+  }, 15000);
   timers.set(host.state, timer);
-  // Node tests should not be kept alive by a background poll.
   (timer as any).unref?.();
 }
-
-function findPending(state: CheckoutState): { key: string; pending: PendingCheckout } | undefined {
-  for (const key of ["pendingAccountCheckout", "pendingPriceCheckout", "pendingPaddleCheckout", "previewPendingCheckout"]) {
-    const pending = state[key] as PendingCheckout | null | undefined;
-    if (pending && typeof pending === "object") return { key, pending };
-  }
-}
-
-function pendingOwner(pending: PendingCheckout): string | undefined { return pending.email || pending.owner; }
-
-async function recover(host: CheckoutHost): Promise<void> {
-const diagnosticEnd2 = diagnostics?.start?.("billing-checkout.recover") ?? (() => {});
-try {
-
-  const entry = findPending(host.state);
-  if (!entry) return;
-  const { key, pending } = entry;
-  if (!host.state.billingAccountLinked || pendingOwner(pending) !== host.state.billingEmail) return;
-  const current = () => host.state[key] === pending && pendingOwner(pending) === host.state.billingEmail;
-  let checkoutId = pending.checkoutId || pending.checkout_id;
-  if (!checkoutId) {
-    const priceId = pending.price_id;
-    const idempotencyKey = pending.key || pending.idempotency_key;
-    const body = priceId
-      ? { app_id: host.appId, installation_id: host.installationId, price_id: priceId, quantity: 1 }
-      : { app_id: host.appId, installation_id: host.installationId, plan_code: pending.plan || pending.plan_code, quantity: 1 };
-    const response = await send(host, priceId ? "checkout-price" : "checkout", "POST", body, idempotencyKey);
-    if (!current()) return;
-    if (response.status < 200 || response.status >= 300 || !response.json?.data?.checkout_id) return;
-    checkoutId = String(response.json.data.checkout_id);
-    if ("checkout_id" in pending || key !== "pendingAccountCheckout") pending.checkout_id = checkoutId;
-    else pending.checkoutId = checkoutId;
+/** Retain old purchase journals without replaying their keys or price IDs into v2. */
+export async function recoverAccountCheckout(host: CheckoutHost, allowOpen = true): Promise<void> {
+  const pending = host.state.pendingAccountCheckout;
+  if (!pending || legacyPending(host) || !host.state.billingAccountLinked || pending.email !== owner(host)) return;
+  const current = () => host.state.pendingAccountCheckout === pending && pending.email === owner(host) && host.state.billingAccountLinked;
+  await host.persist();
+  if (!current()) return;
+  let response;
+  if (!pending.checkoutId) {
+    response = await send(host, "/checkouts", { app_id: host.appId, offer_code: pending.plan, retry_key: pending.key, return_url: null });
+    const data = response.json?.data;
+    const rejected = ["offer_unavailable", "payment_provider_disabled", "new_sales_disabled",
+      "owner_membership_required", "account_unavailable", "merchant_not_qualified",
+      "country_not_qualified", "currency_not_qualified", "return_url_not_allowed",
+      "provider_price_unavailable", "provider_price_readback_unavailable", "provider_grant_mapping_unavailable"];
+    if (current() && rejected.includes(response.json?.error?.code)) {
+      host.state.pendingAccountCheckout = null;
+      await host.persist();
+      new Notice("This offer is unavailable. Refresh the plans and choose an available offer.");
+      return;
+    }
+    if (!current() || response.status !== 202 || !validCheckout(data, host, pending)) return;
+    pending.checkoutId = data.checkout_id;
     await host.persist();
   }
-  const response = await send(host, `checkouts/${encodeURIComponent(checkoutId!)}`, "GET");
-  if (!current()) return;
-  if (response.status < 200 || response.status >= 300) return;
+  response = await send(host, `/checkouts/${encodeURIComponent(pending.checkoutId!)}`);
   const data = response.json?.data;
-  if (data?.settled || ["completed", "fulfilled", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(data?.status)) {
+  if (!current() || response.status !== 200 || !validCheckout(data, host, pending) || data.checkout_id !== pending.checkoutId) return;
+  pending.status = data.status;
+  pending.cancelRequested = data.checkout_instructions?.cancellation_requested === true;
+  await host.persist();
+  if (!current()) return;
+  if (data.fulfillment_status === "fulfilled") {
     await host.syncBalance();
     if (!current()) return;
-    host.state[key] = key === "pendingAccountCheckout" ? null : undefined;
+    host.state.pendingAccountCheckout = null;
+    await host.persist();
+  } else if (["cancelled", "canceled", "failed", "expired", "voided", "rejected", "declined"].includes(data.status)) {
+    host.state.pendingAccountCheckout = null;
+    await host.persist();
+  } else if (allowOpen && data.status !== "paid" && !pending.cancelRequested && typeof data.checkout_url === "string" && /^https:\/\//.test(data.checkout_url) && !pending.opened) {
+    window.open(data.checkout_url, "_blank", "noopener");
+    pending.opened = true;
     await host.persist();
   }
-
-} catch (diagnosticError2) { diagnostics?.failure?.("billing-checkout.recover", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 }
-
+function validCheckout(data: any, host: CheckoutHost, pending: PendingCheckout): boolean {
+  return data?.app_id === host.appId && data?.offer?.code === pending.plan && typeof data?.checkout_id === "string" && !!data.checkout_id;
+}
 export async function openAccountCheckout(host: CheckoutHost, plan: string): Promise<void> {
-const diagnosticEnd3 = diagnostics?.start?.("billing-checkout.openAccountCheckout") ?? (() => {});
-try {
-
-  if (running.has(host.state)) return await (running.get(host.state));
+  if (running.has(host.state)) return running.get(host.state);
+  if (!host.state.billingAccountLinked) { new Notice("Connect your account first."); return; }
+  if (legacyPending(host)) { new Notice("An older purchase is unresolved. Connect its account and contact support before another purchase."); return; }
+  let saved = host.state.pendingAccountCheckout;
+  if (saved && saved.email !== owner(host)) { new Notice("Connect the account that owns the pending purchase first."); return; }
   const operation = (async () => {
-const diagnosticEnd4 = diagnostics?.start?.("billing-checkout.background.4693") ?? (() => {});
-try {
-
-    if (!host.state.billingAccountLinked) { new Notice("Connect your account first."); return; }
-    const saved = host.state.pendingAccountCheckout;
-    if (saved && (saved.plan !== plan || saved.email !== host.state.billingEmail)) {
-      new Notice("A purchase is pending. Its status will refresh automatically before you can start another.");
-      resumeAccountCheckout(host); return;
-    }
-    const pending = saved || { key: `checkout_${globalThis.crypto.randomUUID()}`, plan, email: host.state.billingEmail };
-    host.state.pendingAccountCheckout = pending;
-    try {
-      await host.persist();
-      const response = await send(host, "checkout", "POST", { app_id: host.appId, installation_id: host.installationId, plan_code: plan, quantity: 1 }, pending.key);
-      if (host.state.pendingAccountCheckout !== pending || pending.email !== host.state.billingEmail) return;
-      if (response.status < 200 || response.status >= 300 || !response.json?.data?.checkout_url || !response.json?.data?.checkout_id) {
-        new Notice("Checkout could not be confirmed. Retry the same purchase to recover it safely."); return;
+    if (saved && saved.plan !== plan) {
+      try { await recoverAccountCheckout(host, false); }
+      catch (error) { diagnostics.failure("billing-checkout.refresh", error); }
+      saved = host.state.pendingAccountCheckout;
+      if (saved) {
+        new Notice("A purchase is still pending. Use Cancel current purchase, then wait for confirmation before choosing another pack.");
+        resumeAccountCheckout(host);
+        return;
       }
-      pending.checkoutId = String(response.json.data.checkout_id);
-      await host.persist();
-      window.open(response.json.data.checkout_url, "_blank", "noopener");
-      new Notice("Complete payment in your browser. Your balance will update automatically.");
-    } catch (caughtError3) {
-diagnostics.failure("billing-checkout.caught_4", caughtError3); new Notice("Checkout could not be confirmed. Retry the same purchase to recover it safely."); }
+    }
+    host.state.pendingAccountCheckout = saved || { version: 2, key: `checkout_${globalThis.crypto.randomUUID()}`, plan, email: owner(host), startedAt: Date.now() };
+    // A manual retry reopens the same purchase; background recovery still opens once.
+    if (saved) saved.opened = false;
+    try { await recoverAccountCheckout(host); }
+    catch (error) { diagnostics.failure("billing-checkout.open", error); new Notice("Checkout is still being confirmed. Retry the same purchase to recover it safely."); }
     finally { resumeAccountCheckout(host); }
-
-} catch (diagnosticError4) { diagnostics?.failure?.("billing-checkout.background.4693", diagnosticError4); throw diagnosticError4; } finally { diagnosticEnd4(); }
-})();
+  })();
   running.set(host.state, operation);
   try { await operation; } finally { running.delete(host.state); }
+}
 
-} catch (diagnosticError3) { diagnostics?.failure?.("billing-checkout.openAccountCheckout", diagnosticError3); throw diagnosticError3; } finally { diagnosticEnd3(); }
+/** Keep the journal until Constance confirms paid fulfillment or vendor cancellation. */
+export async function cancelAccountCheckout(host: CheckoutHost): Promise<void> {
+  if (running.has(host.state)) { await running.get(host.state); }
+  if (!host.state.billingAccountLinked) { new Notice("Connect your account first."); return; }
+  if (legacyPending(host)) { new Notice("An older purchase needs account support before it can be cancelled."); return; }
+  const operation = (async () => {
+    try {
+      await recoverAccountCheckout(host, false);
+      const pending = host.state.pendingAccountCheckout;
+      if (!pending) { new Notice("Purchase status updated. You can choose another pack."); return; }
+      if (!pending.checkoutId || pending.email !== owner(host)) { new Notice("Purchase confirmation is pending. Check status again shortly."); return; }
+      const response = await send(host, `/checkouts/${encodeURIComponent(pending.checkoutId)}/cancel`, {});
+      if (response.status !== 200) { new Notice("Checkout could not be cancelled yet. Check purchase status before trying again."); return; }
+      await recoverAccountCheckout(host, false);
+      new Notice(host.state.pendingAccountCheckout
+        ? "Cancellation requested. Constance will confirm it before another purchase can start."
+        : "Purchase status updated. You can choose another pack.");
+    } catch (error) { diagnostics.failure("billing-checkout.cancel", error); new Notice("Cancellation is still being confirmed. Your purchase is retained; check status again shortly."); }
+    finally { resumeAccountCheckout(host); }
+  })();
+  running.set(host.state, operation);
+  try { await operation; } finally { running.delete(host.state); }
 }

@@ -138,6 +138,22 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 
+// publish/constance-v2.ts
+var CONSTANCE_API = "https://app.tutivsoft.com/api/v2";
+var BILLING_UNIT = "characters";
+function accountBalance(data, appId) {
+  const balances = data == null ? void 0 : data.balances;
+  if ((data == null ? void 0 : data.app_id) !== appId || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(balances)) throw new Error("Account balance could not be verified.");
+  const rows = balances.filter((row2) => (row2 == null ? void 0 : row2.unit) === BILLING_UNIT);
+  if (rows.length !== 1) throw new Error("Character balance could not be verified.");
+  const row = rows[0];
+  if (![row.free_remaining, row.free_held, row.paid_balance, row.paid_held, row.spendable, row.deficit].every(Number.isSafeInteger) || [row.free_remaining, row.free_held, row.paid_held, row.spendable, row.deficit].some((n) => n < 0) || row.free_held > row.free_remaining) throw new Error("Account balance could not be verified.");
+  const free = Math.max(0, row.free_remaining - row.free_held);
+  const paid = Math.max(0, row.paid_balance - row.paid_held);
+  if (row.spendable !== free + paid) throw new Error("Account balance could not be verified.");
+  return { ...data, free_usage: { remaining: row.deficit ? 0 : free }, credits: { balance: row.deficit ? 0 : paid, total_available: row.deficit ? 0 : paid } };
+}
+
 // publish/matomo-plugin.ts
 var import_obsidian = require("obsidian");
 var import_matomo_client = __toESM(require_matomo_client());
@@ -278,7 +294,7 @@ var diagnostics = {
   },
   /** Consume failures only where Obsidian invokes us; internal operations keep rejecting. */
   guard(stage, action, fallback) {
-    const recover2 = (error) => {
+    const recover = (error) => {
       var _a;
       this.failure(stage, error);
       if (!(isError(error) && error.name === "AbortError")) {
@@ -291,9 +307,9 @@ var diagnostics = {
     };
     try {
       const result = action();
-      return isPromise(result) ? result.catch(recover2) : result;
+      return isPromise(result) ? result.catch(recover) : result;
     } catch (error) {
-      return recover2(error);
+      return recover(error);
     }
   },
   wrap(stage, callback, fallback) {
@@ -345,57 +361,56 @@ var diagnostics = {
 // publish/account-credit-client.ts
 var import_obsidian3 = require("obsidian");
 async function consumeAccountUnits(host, eventId, amount) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
-  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "account-credit-client.consumeAccountUnits")) != null ? _c : (() => {
-  });
+  var _a, _b, _c;
+  if (!host.state.billingAccountLinked || !host.installationId) return { kind: "auth-required" };
+  if (!Number.isSafeInteger(amount) || amount <= 0 || !eventId.startsWith("v2consume_")) return { kind: "error" };
+  const owner2 = host.state.billingEmail;
+  const current = () => host.state.billingAccountLinked && host.state.billingEmail === owner2;
+  const send2 = async (path, body) => {
+    if (!current()) return { status: 401 };
+    if (!host.state.billingAccessToken && !await host.refreshSession()) return { status: 401 };
+    const request = () => (0, import_obsidian3.requestUrl)({
+      url: `${CONSTANCE_API}${path}`,
+      method: body ? "POST" : "GET",
+      throw: false,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
+      ...body ? { body: JSON.stringify(body) } : {}
+    });
+    let response = await request();
+    if (response.status === 401 && host.state.billingRefreshToken && await host.refreshSession() && current()) response = await request();
+    return response;
+  };
+  const valid = (op) => (op == null ? void 0 : op.app_id) === host.appId && (op == null ? void 0 : op.unit) === BILLING_UNIT && (op == null ? void 0 : op.units) === amount && typeof op.operation_id === "string" && !!op.operation_id && Number.isSafeInteger(op.free_units) && op.free_units >= 0 && Number.isSafeInteger(op.paid_units) && op.paid_units >= 0 && (["reserved", "committed"].includes(op.state) ? op.free_units + op.paid_units === amount : op.state === "denied" && op.free_units === 0 && op.paid_units === 0);
   try {
-    if (!host.state.billingAccountLinked || !host.installationId) return { kind: "auth-required" };
-    if (!Number.isSafeInteger(amount) || amount <= 0 || !eventId) return { kind: "error" };
-    if (!host.state.billingAccessToken && !await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
-    const send3 = () => {
-      var _a2, _b2, _c2;
-      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.account-credit-client.consumeAccountUnits", import_obsidian3.requestUrl, {
-        url: "https://app.tutivsoft.com/api/v1/billing/usage/consume",
-        method: "POST",
-        throw: false,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
-        body: JSON.stringify({ app_id: host.appId, installation_id: host.installationId, event_id: eventId, amount })
-      })) != null ? _c2 : (0, import_obsidian3.requestUrl)({
-        url: "https://app.tutivsoft.com/api/v1/billing/usage/consume",
-        method: "POST",
-        throw: false,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
-        body: JSON.stringify({ app_id: host.appId, installation_id: host.installationId, event_id: eventId, amount })
-      });
-    };
-    try {
-      let response = await send3();
-      if (response.status === 401 && host.state.billingRefreshToken) {
-        if (!await host.refreshSession()) return { kind: host.state.billingRefreshToken ? "error" : "auth-required" };
-        response = await send3();
-      }
-      if (response.status === 402) return { kind: "insufficient" };
-      if (response.status === 401 || response.status === 403) return { kind: "auth-required" };
-      if (response.status < 200 || response.status >= 300) return { kind: "error" };
-      const data = (_d = response.json) == null ? void 0 : _d.data;
-      if ((data == null ? void 0 : data.state) !== "committed" || data.app_id !== host.appId || data.installation_id !== host.installationId || data.event_id !== eventId || data.amount !== amount || !Number.isSafeInteger(data.free_units) || !Number.isSafeInteger(data.paid_units) || data.free_units < 0 || data.paid_units < 0 || data.free_units + data.paid_units !== amount && !(data.retained_access === true && data.free_units === 0 && data.paid_units === 0 && ((_e = data.legacy_units) != null ? _e : 0) === 0)) return { kind: "error" };
-      const freeRemaining = Number((_f = data.free_usage) == null ? void 0 : _f.remaining), balance = Number((_i = (_g = data.credits) == null ? void 0 : _g.total_available) != null ? _i : (_h = data.credits) == null ? void 0 : _h.balance);
-      return {
-        kind: "ok",
-        freeUnits: data.free_units,
-        paidUnits: data.paid_units,
-        ...Number.isFinite(freeRemaining) ? { freeRemaining: Math.max(0, freeRemaining) } : {},
-        ...Number.isFinite(balance) ? { balance: Math.max(0, balance) } : {}
-      };
-    } catch (caughtError1) {
-      diagnostics.failure("account-credit-client.caught_2", caughtError1);
-      return { kind: "error" };
+    let response = await send2("/billing/operations", { app_id: host.appId, unit: BILLING_UNIT, units: amount, retry_key: eventId });
+    if (!current()) return { kind: "error" };
+    if (response.status === 401 || response.status === 403) return { kind: "auth-required" };
+    if (response.status < 200 || response.status >= 300 || !valid((_a = response.json) == null ? void 0 : _a.data)) return { kind: "error" };
+    let op = response.json.data;
+    if (op.state === "denied") return { kind: "insufficient" };
+    if (op.state === "reserved") {
+      const original = op;
+      response = await send2(`/billing/operations/${encodeURIComponent(op.operation_id)}/commit`, {});
+      op = (_b = response.json) == null ? void 0 : _b.data;
+      if (!current() || response.status < 200 || response.status >= 300 || !valid(op) || op.operation_id !== original.operation_id || op.free_units !== original.free_units || op.paid_units !== original.paid_units) return { kind: "error" };
     }
-  } catch (diagnosticError1) {
-    (_k = (_j = diagnostics) == null ? void 0 : _j.failure) == null ? void 0 : _k.call(_j, "account-credit-client.consumeAccountUnits", diagnosticError1);
-    throw diagnosticError1;
-  } finally {
-    diagnosticEnd1();
+    if (op.state !== "committed") return { kind: "error" };
+    let balance;
+    try {
+      const result = await send2(`/billing/entitlements/me?app_id=${encodeURIComponent(host.appId)}`);
+      if (result.status === 200 && current()) balance = accountBalance((_c = result.json) == null ? void 0 : _c.data, host.appId);
+    } catch (_) {
+    }
+    if (!current()) return { kind: "error" };
+    return {
+      kind: "ok",
+      freeUnits: op.free_units,
+      paidUnits: op.paid_units,
+      ...balance ? { freeRemaining: balance.free_usage.remaining, balance: balance.credits.balance } : {}
+    };
+  } catch (error) {
+    diagnostics.failure("account-credit-client.consume", error);
+    return { kind: "error" };
   }
 }
 
@@ -543,12 +558,12 @@ function renderAccountGuidance(section, host) {
     details.createEl("p", { text: "Connect your account to load your free and purchased credits. Free credits are used first, then purchased credits. Your balance stays with your account after reinstalling. Current quantities and prices are shown in Account." });
     void diagnostics.guard("account-guidance.background_1", () => {
       var _a2, _b, _c;
-      return ((_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b.call(_a2, "network.account-guidance.renderAccountGuidance", import_obsidian4.requestUrl, { url: `https://app.tutivsoft.com/api/v1/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })) != null ? _c : (0, import_obsidian4.requestUrl)({ url: `https://app.tutivsoft.com/api/v1/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })).then((response) => {
+      return ((_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b.call(_a2, "network.account-guidance.renderAccountGuidance", import_obsidian4.requestUrl, { url: `${CONSTANCE_API}/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })) != null ? _c : (0, import_obsidian4.requestUrl)({ url: `${CONSTANCE_API}/billing/policy?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false })).then((response) => {
         var _a3, _b2;
-        const p = response.status === 200 ? (_b2 = (_a3 = response.json) == null ? void 0 : _a3.data) == null ? void 0 : _b2.account_free_usage : null;
-        if (!p || !Number.isFinite(p.allowance) || p.allowance < 0) return;
+        const p = response.status === 200 ? (_b2 = (_a3 = response.json) == null ? void 0 : _a3.data) == null ? void 0 : _b2.free_policy : null;
+        if (!p || !Number.isFinite(p.units) || p.units < 0) return;
         const unit = String(p.unit).replace(/_/g, " ");
-        label2.setText(p.enabled ? `Free credits: ${Number(p.allowance).toLocaleString()} ${unit} per account. Connect to check what remains.` : "Connect to check your account access and available credits.");
+        label2.setText(["lifetime_units", "period_units"].includes(p.kind) ? `Free credits: ${Number(p.units).toLocaleString()} ${unit} per account. Connect to check what remains.` : "Connect to check your account access and available credits.");
       }).catch((rejectedError1) => {
         diagnostics.failure("account-guidance.rejected_2", rejectedError1);
       });
@@ -561,109 +576,193 @@ function renderAccountGuidance(section, host) {
 var import_obsidian5 = require("obsidian");
 var running = /* @__PURE__ */ new WeakMap();
 var timers = /* @__PURE__ */ new WeakMap();
-async function send(host, path, method, body, key) {
-  var _a, _b, _c, _d, _e;
-  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-checkout.send")) != null ? _c : (() => {
+var owner = (host) => host.state.billingEmail.trim().toLowerCase();
+function legacyPending(host) {
+  return ["pendingPriceCheckout", "pendingPaddleCheckout", "previewPendingCheckout"].some((key) => !!host.state[key]) || !!host.state.pendingAccountCheckout && host.state.pendingAccountCheckout.version !== 2;
+}
+async function send(host, path, body) {
+  const originalOwner = owner(host);
+  const request = () => !host.state.billingAccountLinked || owner(host) !== originalOwner ? Promise.resolve({ status: 401 }) : (0, import_obsidian5.requestUrl)({
+    url: `${CONSTANCE_API}${path}`,
+    method: body ? "POST" : "GET",
+    throw: false,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}` },
+    ...body ? { body: JSON.stringify(body) } : {}
   });
-  try {
-    const request = () => {
-      var _a2, _b2, _c2;
-      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.billing-checkout.send", import_obsidian5.requestUrl, {
-        url: `https://app.tutivsoft.com/api/v1/billing/${path}`,
-        method,
-        throw: false,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...key ? { "Idempotency-Key": key } : {} },
-        ...body ? { body: JSON.stringify(body) } : {}
-      })) != null ? _c2 : (0, import_obsidian5.requestUrl)({
-        url: `https://app.tutivsoft.com/api/v1/billing/${path}`,
-        method,
-        throw: false,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${host.state.billingAccessToken}`, ...key ? { "Idempotency-Key": key } : {} },
-        ...body ? { body: JSON.stringify(body) } : {}
-      });
-    };
-    let response = await request();
-    if (response.status === 401 && await host.refreshSession()) response = await request();
-    return await response;
-  } catch (diagnosticError1) {
-    (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "billing-checkout.send", diagnosticError1);
-    throw diagnosticError1;
-  } finally {
-    diagnosticEnd1();
-  }
+  let response = await request();
+  if (response.status === 401 && await host.refreshSession()) response = await request();
+  return response;
 }
 function resumeAccountCheckout(host) {
   var _a;
-  const entry = findPending(host.state);
-  if (!entry || !host.state.billingAccountLinked || pendingOwner(entry.pending) !== host.state.billingEmail || timers.has(host.state)) return;
+  const pending = host.state.pendingAccountCheckout;
+  if (!pending || legacyPending(host) || !host.state.billingAccountLinked || pending.email !== owner(host) || timers.has(host.state)) return;
   const timer = setTimeout(() => {
-    return diagnostics.guard("billing-checkout.timer_1", () => {
-      timers.delete(host.state);
-      if (running.has(host.state)) {
-        resumeAccountCheckout(host);
-        return;
-      }
-      const operation = recover(host);
-      running.set(host.state, operation);
-      void diagnostics.guard("billing-checkout.background_2", () => operation.catch((rejectedError1) => {
-        diagnostics.failure("billing-checkout.rejected_2", rejectedError1);
-        return void 0;
-      }).finally(() => {
-        running.delete(host.state);
-        resumeAccountCheckout(host);
-      }));
+    timers.delete(host.state);
+    if (running.has(host.state)) {
+      resumeAccountCheckout(host);
+      return;
+    }
+    const operation = recoverAccountCheckout(host);
+    running.set(host.state, operation);
+    void operation.catch((error) => diagnostics.failure("billing-checkout.recover", error)).finally(() => {
+      running.delete(host.state);
+      resumeAccountCheckout(host);
     });
   }, 15e3);
   timers.set(host.state, timer);
   (_a = timer.unref) == null ? void 0 : _a.call(timer);
 }
-function findPending(state) {
-  for (const key of ["pendingAccountCheckout", "pendingPriceCheckout", "pendingPaddleCheckout", "previewPendingCheckout"]) {
-    const pending = state[key];
-    if (pending && typeof pending === "object") return { key, pending };
+async function recoverAccountCheckout(host, allowOpen = true) {
+  var _a, _b, _c, _d, _e;
+  const pending = host.state.pendingAccountCheckout;
+  if (!pending || legacyPending(host) || !host.state.billingAccountLinked || pending.email !== owner(host)) return;
+  const current = () => host.state.pendingAccountCheckout === pending && pending.email === owner(host) && host.state.billingAccountLinked;
+  await host.persist();
+  if (!current()) return;
+  let response;
+  if (!pending.checkoutId) {
+    response = await send(host, "/checkouts", { app_id: host.appId, offer_code: pending.plan, retry_key: pending.key, return_url: null });
+    const data2 = (_a = response.json) == null ? void 0 : _a.data;
+    const rejected = [
+      "offer_unavailable",
+      "payment_provider_disabled",
+      "new_sales_disabled",
+      "owner_membership_required",
+      "account_unavailable",
+      "merchant_not_qualified",
+      "country_not_qualified",
+      "currency_not_qualified",
+      "return_url_not_allowed",
+      "provider_price_unavailable",
+      "provider_price_readback_unavailable",
+      "provider_grant_mapping_unavailable"
+    ];
+    if (current() && rejected.includes((_c = (_b = response.json) == null ? void 0 : _b.error) == null ? void 0 : _c.code)) {
+      host.state.pendingAccountCheckout = null;
+      await host.persist();
+      new import_obsidian5.Notice("This offer is unavailable. Refresh the plans and choose an available offer.");
+      return;
+    }
+    if (!current() || response.status !== 202 || !validCheckout(data2, host, pending)) return;
+    pending.checkoutId = data2.checkout_id;
+    await host.persist();
+  }
+  response = await send(host, `/checkouts/${encodeURIComponent(pending.checkoutId)}`);
+  const data = (_d = response.json) == null ? void 0 : _d.data;
+  if (!current() || response.status !== 200 || !validCheckout(data, host, pending) || data.checkout_id !== pending.checkoutId) return;
+  pending.status = data.status;
+  pending.cancelRequested = ((_e = data.checkout_instructions) == null ? void 0 : _e.cancellation_requested) === true;
+  await host.persist();
+  if (!current()) return;
+  if (data.fulfillment_status === "fulfilled") {
+    await host.syncBalance();
+    if (!current()) return;
+    host.state.pendingAccountCheckout = null;
+    await host.persist();
+  } else if (["cancelled", "canceled", "failed", "expired", "voided", "rejected", "declined"].includes(data.status)) {
+    host.state.pendingAccountCheckout = null;
+    await host.persist();
+  } else if (allowOpen && data.status !== "paid" && !pending.cancelRequested && typeof data.checkout_url === "string" && /^https:\/\//.test(data.checkout_url) && !pending.opened) {
+    window.open(data.checkout_url, "_blank", "noopener");
+    pending.opened = true;
+    await host.persist();
   }
 }
-function pendingOwner(pending) {
-  return pending.email || pending.owner;
+function validCheckout(data, host, pending) {
+  var _a;
+  return (data == null ? void 0 : data.app_id) === host.appId && ((_a = data == null ? void 0 : data.offer) == null ? void 0 : _a.code) === pending.plan && typeof (data == null ? void 0 : data.checkout_id) === "string" && !!data.checkout_id;
 }
-async function recover(host) {
-  var _a, _b, _c, _d, _e, _f, _g, _h;
-  const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-checkout.recover")) != null ? _c : (() => {
-  });
+async function openAccountCheckout(host, plan) {
+  if (running.has(host.state)) return running.get(host.state);
+  if (!host.state.billingAccountLinked) {
+    new import_obsidian5.Notice("Connect your account first.");
+    return;
+  }
+  if (legacyPending(host)) {
+    new import_obsidian5.Notice("An older purchase is unresolved. Connect its account and contact support before another purchase.");
+    return;
+  }
+  let saved = host.state.pendingAccountCheckout;
+  if (saved && saved.email !== owner(host)) {
+    new import_obsidian5.Notice("Connect the account that owns the pending purchase first.");
+    return;
+  }
+  const operation = (async () => {
+    if (saved && saved.plan !== plan) {
+      try {
+        await recoverAccountCheckout(host, false);
+      } catch (error) {
+        diagnostics.failure("billing-checkout.refresh", error);
+      }
+      saved = host.state.pendingAccountCheckout;
+      if (saved) {
+        new import_obsidian5.Notice("A purchase is still pending. Use Cancel current purchase, then wait for confirmation before choosing another pack.");
+        resumeAccountCheckout(host);
+        return;
+      }
+    }
+    host.state.pendingAccountCheckout = saved || { version: 2, key: `checkout_${globalThis.crypto.randomUUID()}`, plan, email: owner(host), startedAt: Date.now() };
+    if (saved) saved.opened = false;
+    try {
+      await recoverAccountCheckout(host);
+    } catch (error) {
+      diagnostics.failure("billing-checkout.open", error);
+      new import_obsidian5.Notice("Checkout is still being confirmed. Retry the same purchase to recover it safely.");
+    } finally {
+      resumeAccountCheckout(host);
+    }
+  })();
+  running.set(host.state, operation);
   try {
-    const entry = findPending(host.state);
-    if (!entry) return;
-    const { key, pending } = entry;
-    if (!host.state.billingAccountLinked || pendingOwner(pending) !== host.state.billingEmail) return;
-    const current = () => host.state[key] === pending && pendingOwner(pending) === host.state.billingEmail;
-    let checkoutId = pending.checkoutId || pending.checkout_id;
-    if (!checkoutId) {
-      const priceId = pending.price_id;
-      const idempotencyKey = pending.key || pending.idempotency_key;
-      const body = priceId ? { app_id: host.appId, installation_id: host.installationId, price_id: priceId, quantity: 1 } : { app_id: host.appId, installation_id: host.installationId, plan_code: pending.plan || pending.plan_code, quantity: 1 };
-      const response2 = await send(host, priceId ? "checkout-price" : "checkout", "POST", body, idempotencyKey);
-      if (!current()) return;
-      if (response2.status < 200 || response2.status >= 300 || !((_e = (_d = response2.json) == null ? void 0 : _d.data) == null ? void 0 : _e.checkout_id)) return;
-      checkoutId = String(response2.json.data.checkout_id);
-      if ("checkout_id" in pending || key !== "pendingAccountCheckout") pending.checkout_id = checkoutId;
-      else pending.checkoutId = checkoutId;
-      await host.persist();
-    }
-    const response = await send(host, `checkouts/${encodeURIComponent(checkoutId)}`, "GET");
-    if (!current()) return;
-    if (response.status < 200 || response.status >= 300) return;
-    const data = (_f = response.json) == null ? void 0 : _f.data;
-    if ((data == null ? void 0 : data.settled) || ["completed", "fulfilled", "failed", "canceled", "cancelled", "expired", "voided", "rejected"].includes(data == null ? void 0 : data.status)) {
-      await host.syncBalance();
-      if (!current()) return;
-      host.state[key] = key === "pendingAccountCheckout" ? null : void 0;
-      await host.persist();
-    }
-  } catch (diagnosticError2) {
-    (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "billing-checkout.recover", diagnosticError2);
-    throw diagnosticError2;
+    await operation;
   } finally {
-    diagnosticEnd2();
+    running.delete(host.state);
+  }
+}
+async function cancelAccountCheckout(host) {
+  if (running.has(host.state)) {
+    await running.get(host.state);
+  }
+  if (!host.state.billingAccountLinked) {
+    new import_obsidian5.Notice("Connect your account first.");
+    return;
+  }
+  if (legacyPending(host)) {
+    new import_obsidian5.Notice("An older purchase needs account support before it can be cancelled.");
+    return;
+  }
+  const operation = (async () => {
+    try {
+      await recoverAccountCheckout(host, false);
+      const pending = host.state.pendingAccountCheckout;
+      if (!pending) {
+        new import_obsidian5.Notice("Purchase status updated. You can choose another pack.");
+        return;
+      }
+      if (!pending.checkoutId || pending.email !== owner(host)) {
+        new import_obsidian5.Notice("Purchase confirmation is pending. Check status again shortly.");
+        return;
+      }
+      const response = await send(host, `/checkouts/${encodeURIComponent(pending.checkoutId)}/cancel`, {});
+      if (response.status !== 200) {
+        new import_obsidian5.Notice("Checkout could not be cancelled yet. Check purchase status before trying again.");
+        return;
+      }
+      await recoverAccountCheckout(host, false);
+      new import_obsidian5.Notice(host.state.pendingAccountCheckout ? "Cancellation requested. Constance will confirm it before another purchase can start." : "Purchase status updated. You can choose another pack.");
+    } catch (error) {
+      diagnostics.failure("billing-checkout.cancel", error);
+      new import_obsidian5.Notice("Cancellation is still being confirmed. Your purchase is retained; check status again shortly.");
+    } finally {
+      resumeAccountCheckout(host);
+    }
+  })();
+  running.set(host.state, operation);
+  try {
+    await operation;
+  } finally {
+    running.delete(host.state);
   }
 }
 
@@ -691,7 +790,6 @@ async function connectWithinDeadline(state, operation, refresh) {
     if (timer !== void 0) clearTimeout(timer);
   }
 }
-var CONSTANCE_ACCOUNT_BASE_URL = "https://app.tutivsoft.com";
 var ConstanceAccountError = class extends Error {
   constructor(message, status) {
     super(message);
@@ -700,8 +798,8 @@ var ConstanceAccountError = class extends Error {
   }
 };
 function errorDetail(response, fallback) {
-  var _a;
-  const payload = ((_a = response.json) == null ? void 0 : _a.data) || response.json;
+  var _a, _b;
+  const payload = ((_a = response.json) == null ? void 0 : _a.error) || ((_b = response.json) == null ? void 0 : _b.data) || response.json;
   const detail = payload == null ? void 0 : payload.detail;
   const code = (detail == null ? void 0 : detail.code) || (payload == null ? void 0 : payload.code);
   if (code === "invalid_credentials") return "The email or password is incorrect. Use Forgot password? to reset it.";
@@ -732,79 +830,64 @@ async function linkAuthenticatedInstallation(adapter, token) {
     diagnosticEnd1();
   }
 }
-async function authenticate(mode, email, password, installationId) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
-  const diagnosticEnd2 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.authenticate")) != null ? _c : (() => {
+async function authenticate(mode, email, password, appId) {
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const action = mode === "connect" ? "login" : mode;
+  const response = await (0, import_obsidian6.requestUrl)({
+    url: `${CONSTANCE_API}/auth/${action}`,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, app_id: appId, ...action === "login" ? { mode: "customer" } : {} }),
+    throw: false
   });
-  try {
-    const body = mode !== "login" ? { email, password, external_customer_id: installationId } : { email, password };
-    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.authenticate", import_obsidian6.requestUrl, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      throw: false
-    })) != null ? _f : (0, import_obsidian6.requestUrl)({
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      throw: false
-    }));
-    if (response.status < 200 || response.status >= 300) {
-      throw new ConstanceAccountError(errorDetail(response, `Could not connect your account. Check your connection and try again.`), response.status);
-    }
-    if (((_g = response.json) == null ? void 0 : _g.verification_required) === true) return { verificationRequired: true };
-    const token = String(((_h = response.json) == null ? void 0 : _h.access_token) || "");
-    const refreshToken = String(((_i = response.json) == null ? void 0 : _i.refresh_token) || "");
-    if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number((_j = response.json) == null ? void 0 : _j.expires_in) || 900 };
-    throw new Error("Could not sign in. Try connecting again.");
-  } catch (diagnosticError2) {
-    (_l = (_k = diagnostics) == null ? void 0 : _k.failure) == null ? void 0 : _l.call(_k, "constance-account.authenticate", diagnosticError2);
-    throw diagnosticError2;
-  } finally {
-    diagnosticEnd2();
+  if (response.status < 200 || response.status >= 300) {
+    const error = new ConstanceAccountError(errorDetail(response, "Could not connect your account. Try again."), response.status);
+    error.code = ((_b = (_a = response.json) == null ? void 0 : _a.error) == null ? void 0 : _b.code) || ((_d = (_c = response.json) == null ? void 0 : _c.detail) == null ? void 0 : _d.code) || ((_g = (_f = (_e = response.json) == null ? void 0 : _e.data) == null ? void 0 : _f.detail) == null ? void 0 : _g.code);
+    if (mode === "connect" && error.code === "invalid_credentials") return authenticate("register", email, password, appId);
+    throw error;
   }
+  if (action === "register" && response.status === 202) return { verificationRequired: true };
+  const data = (_h = response.json) == null ? void 0 : _h.data;
+  if ((data == null ? void 0 : data.access_token) && (data == null ? void 0 : data.refresh_token)) return { accessToken: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in };
+  throw new Error("Could not sign in. Try connecting again.");
 }
 async function linkInstallation(adapter, token) {
-  var _a, _b, _c, _d, _e, _f, _g, _h;
-  const diagnosticEnd3 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.linkInstallation")) != null ? _c : (() => {
-  });
-  try {
-    const response = await ((_f = (_e = (_d = diagnostics) == null ? void 0 : _d.request) == null ? void 0 : _e.call(_d, "network.constance-account.linkInstallation", import_obsidian6.requestUrl, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        app_id: adapter.appId,
-        installation_id: adapter.installationId,
-        legacy_external_customer_id: adapter.installationId,
-        platform: "obsidian",
-        app_version: adapter.appVersion || void 0
-      }),
-      throw: false
-    })) != null ? _f : (0, import_obsidian6.requestUrl)({
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        app_id: adapter.appId,
-        installation_id: adapter.installationId,
-        legacy_external_customer_id: adapter.installationId,
-        platform: "obsidian",
-        app_version: adapter.appVersion || void 0
-      }),
-      throw: false
-    }));
-    if (response.status < 200 || response.status >= 300) {
-      throw new ConstanceAccountError(errorDetail(response, `Could not connect this installation to your account. Try connecting again.`), response.status);
-    }
-  } catch (diagnosticError3) {
-    (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "constance-account.linkInstallation", diagnosticError3);
-    throw diagnosticError3;
-  } finally {
-    diagnosticEnd3();
+  var _a, _b, _c, _d;
+  const state = adapter.state;
+  const owner2 = state.billingEmail.trim().toLowerCase();
+  const current = () => state.billingAccessToken === token && state.billingEmail.trim().toLowerCase() === owner2;
+  if (!current()) throw new Error("Account connection changed.");
+  if (state.billingV2InstallationOwner && state.billingV2InstallationId && state.billingV2InstallationToken) {
+    state.billingV2Installations || (state.billingV2Installations = {});
+    state.billingV2Installations[state.billingV2InstallationOwner] = { id: state.billingV2InstallationId, token: state.billingV2InstallationToken };
   }
+  if (state.billingV2InstallationOwner !== owner2) {
+    const saved = (_a = state.billingV2Installations) == null ? void 0 : _a[owner2];
+    state.billingV2InstallationId = saved == null ? void 0 : saved.id;
+    state.billingV2InstallationToken = saved == null ? void 0 : saved.token;
+    state.billingV2InstallationOwner = owner2;
+  }
+  if (!state.billingV2InstallationId || !state.billingV2InstallationToken) {
+    const created = await (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/public/installations`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_id: adapter.appId }), throw: false });
+    const data = (_b = created.json) == null ? void 0 : _b.data;
+    if (created.status !== 201 || !(data == null ? void 0 : data.installation_id) || !(data == null ? void 0 : data.installation_token)) throw new ConstanceAccountError(errorDetail(created, "Could not register this installation."), created.status);
+    if (!current()) throw new Error("Account connection changed.");
+    state.billingV2InstallationId = String(data.installation_id);
+    state.billingV2InstallationToken = String(data.installation_token);
+    state.billingV2InstallationOwner = owner2;
+    await adapter.persist();
+  }
+  await adapter.persist();
+  if (!current()) throw new Error("Account connection changed.");
+  const response = await (0, import_obsidian6.requestUrl)({
+    url: `${CONSTANCE_API}/billing/installations/link`,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ installation_id: state.billingV2InstallationId, token: state.billingV2InstallationToken }),
+    throw: false
+  });
+  if (response.status < 200 || response.status >= 300) throw new ConstanceAccountError(errorDetail(response, "Could not connect this installation."), response.status);
+  if (((_d = (_c = response.json) == null ? void 0 : _c.data) == null ? void 0 : _d.linked) !== true || response.json.data.installation_id !== state.billingV2InstallationId) throw new Error("Installation ownership could not be verified.");
 }
 async function signInBillingAccount(adapter, password, mode) {
   var _a, _b, _c, _d, _e;
@@ -813,12 +896,14 @@ async function signInBillingAccount(adapter, password, mode) {
   try {
     const email = adapter.state.billingEmail.trim().toLowerCase();
     const journalState = adapter.state;
-    const owner = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
-    if (owner && owner !== email) throw new Error(`A pending action belongs to ${owner}. Connect that account to resume it first.`);
+    const owner2 = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
+    if (owner2 && owner2 !== email) throw new Error(`A pending action belongs to ${owner2}. Connect that account to resume it first.`);
+    const pending = [journalState.pendingAccountCheckout, journalState.pendingPriceCheckout, journalState.pendingPaddleCheckout, journalState.previewPendingCheckout, ...journalState.pendingSpendEvents || []].filter(Boolean);
+    if (pending.some((item) => String(item.owner || item.email || journalState.billingV2InstallationOwner || email).trim().toLowerCase() !== email)) throw new Error("A pending action belongs to another account. Connect that account first.");
     if (!email || !email.includes("@")) throw new Error("Enter a valid email address.");
-    if (Array.from(password).length < 8 || Array.from(password).length > 128) throw new Error("Password must be between 8 and 128 characters.");
+    if (Array.from(password).length < 1 || Array.from(password).length > 256) throw new Error("Enter a password of up to 256 characters. New accounts require at least 12 characters.");
     if (!adapter.installationId) throw new Error("The plugin is still starting. Try again shortly.");
-    const result = await authenticate(mode, email, password, adapter.installationId);
+    const result = await authenticate(mode, email, password, adapter.appId);
     if (!result.accessToken) {
       clearBillingSession(adapter.state);
       adapter.state.billingEmail = email;
@@ -848,7 +933,9 @@ async function completeBillingSignIn(adapter, email, session) {
     adapter.state.billingAccountLinked = false;
     adapter.state.billingRegistrationPending = false;
     await adapter.persist();
+    if (adapter.state.billingAccessToken !== session.accessToken || adapter.state.billingEmail !== email) throw new Error("Account connection changed. Connect again.");
     await linkAuthenticatedInstallation(adapter, session.accessToken);
+    if (adapter.state.billingAccessToken !== session.accessToken || adapter.state.billingEmail !== email) throw new Error("Account connection changed. Connect again.");
     adapter.state.billingAccountLinked = true;
     await adapter.persist();
     await adapter.syncBalance();
@@ -865,23 +952,24 @@ function clearBillingSession(state) {
   state.billingAccessExpiresAt = 0;
   state.billingAccountLinked = false;
 }
-var refreshInFlight = null;
+var refreshes = /* @__PURE__ */ new WeakMap();
 async function refreshBillingSession(state, persist) {
   var _a, _b, _c, _d, _e;
   const diagnosticEnd7 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.refreshBillingSession")) != null ? _c : (() => {
   });
   try {
     if (!state.billingRefreshToken) return false;
-    if (refreshInFlight) return await refreshInFlight;
+    const pendingRefresh = refreshes.get(state);
+    if (pendingRefresh) return await pendingRefresh;
     const originalToken = state.billingRefreshToken;
-    refreshInFlight = (async () => {
-      var _a2, _b2, _c2, _d2, _e2, _f, _g, _h, _i, _j, _k;
+    const refreshInFlight = (async () => {
+      var _a2, _b2, _c2, _d2, _e2, _f, _g, _h, _i, _j, _k, _l, _m, _n;
       const diagnosticEnd8 = (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b2.call(_a2, "constance-account.background.8317")) != null ? _c2 : (() => {
       });
       try {
         let response;
         try {
-          response = await ((_f = (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.request) == null ? void 0 : _e2.call(_d2, "network.constance-account.refreshBillingSession", import_obsidian6.requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false })) != null ? _f : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }));
+          response = await ((_f = (_e2 = (_d2 = diagnostics) == null ? void 0 : _d2.request) == null ? void 0 : _e2.call(_d2, "network.constance-account.refreshBillingSession", import_obsidian6.requestUrl, { url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false })) != null ? _f : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false }));
         } catch (caughtError2) {
           diagnostics.failure("constance-account.caught_3", caughtError2);
           return false;
@@ -893,8 +981,8 @@ async function refreshBillingSession(state, persist) {
           return false;
         }
         if (response.status < 200 || response.status >= 300) return false;
-        const access = String(((_g = response.json) == null ? void 0 : _g.access_token) || "");
-        const refresh = String(((_h = response.json) == null ? void 0 : _h.refresh_token) || "");
+        const access = String(((_h = (_g = response.json) == null ? void 0 : _g.data) == null ? void 0 : _h.access_token) || "");
+        const refresh = String(((_j = (_i = response.json) == null ? void 0 : _i.data) == null ? void 0 : _j.refresh_token) || "");
         if (!access || !refresh) {
           clearBillingSession(state);
           await persist();
@@ -902,20 +990,21 @@ async function refreshBillingSession(state, persist) {
         }
         state.billingAccessToken = access;
         state.billingRefreshToken = refresh;
-        state.billingAccessExpiresAt = Date.now() + (Number((_i = response.json) == null ? void 0 : _i.expires_in) || 900) * 1e3;
+        state.billingAccessExpiresAt = Date.now() + (Number((_l = (_k = response.json) == null ? void 0 : _k.data) == null ? void 0 : _l.expires_in) || 900) * 1e3;
         await persist();
         return true;
       } catch (diagnosticError8) {
-        (_k = (_j = diagnostics) == null ? void 0 : _j.failure) == null ? void 0 : _k.call(_j, "constance-account.background.8317", diagnosticError8);
+        (_n = (_m = diagnostics) == null ? void 0 : _m.failure) == null ? void 0 : _n.call(_m, "constance-account.background.8317", diagnosticError8);
         throw diagnosticError8;
       } finally {
         diagnosticEnd8();
       }
     })();
+    refreshes.set(state, refreshInFlight);
     try {
       return await refreshInFlight;
     } finally {
-      refreshInFlight = null;
+      refreshes.delete(state);
     }
   } catch (diagnosticError7) {
     (_e = (_d = diagnostics) == null ? void 0 : _d.failure) == null ? void 0 : _e.call(_d, "constance-account.refreshBillingSession", diagnosticError7);
@@ -932,14 +1021,14 @@ async function requestAuthenticatedBilling(state, persist, options) {
     if (state.billingRefreshToken && (!state.billingAccessToken || Date.now() >= state.billingAccessExpiresAt - 6e4)) {
       if (!await refreshBillingSession(state, persist) && state.billingRefreshToken) return { status: 503 };
     }
-    const send3 = () => {
+    const send2 = () => {
       var _a2, _b2, _c2;
       return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.requestAuthenticatedBilling", import_obsidian6.requestUrl, { ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false })) != null ? _c2 : (0, import_obsidian6.requestUrl)({ ...options, headers: { ...options.headers || {}, Authorization: `Bearer ${state.billingAccessToken}` }, throw: false });
     };
     if (!state.billingAccessToken) return { status: 401 };
-    let response = await send3();
+    let response = await send2();
     if (response.status === 401 && state.billingRefreshToken) {
-      if (await refreshBillingSession(state, persist)) response = await send3();
+      if (await refreshBillingSession(state, persist)) response = await send2();
       else if (state.billingRefreshToken) return { status: 503 };
     }
     return await response;
@@ -951,91 +1040,26 @@ async function requestAuthenticatedBilling(state, persist, options) {
   }
 }
 async function pollAuthenticatedCheckout(adapter, checkoutId) {
-  var _a, _b, _c, _d, _e, _f, _g;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
   const diagnosticEnd11 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.pollAuthenticatedCheckout")) != null ? _c : (() => {
   });
   try {
     if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
     const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
+      url: `${CONSTANCE_API}/checkouts/${encodeURIComponent(checkoutId)}`,
       method: "GET",
       throw: false
     });
-    return await (response.status >= 200 && response.status < 300 && ((_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.settled) === true);
+    return await (response.status >= 200 && response.status < 300 && ((_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.app_id) === adapter.appId && ((_g = (_f = response.json) == null ? void 0 : _f.data) == null ? void 0 : _g.checkout_id) === checkoutId && ((_i = (_h = response.json) == null ? void 0 : _h.data) == null ? void 0 : _i.fulfillment_status) === "fulfilled");
   } catch (diagnosticError11) {
-    (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "constance-account.pollAuthenticatedCheckout", diagnosticError11);
+    (_k = (_j = diagnostics) == null ? void 0 : _j.failure) == null ? void 0 : _k.call(_j, "constance-account.pollAuthenticatedCheckout", diagnosticError11);
     throw diagnosticError11;
   } finally {
     diagnosticEnd11();
   }
 }
 async function claimAccountFreeUsage(state, persist, appId, installationId, eventId, amount) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
-  const diagnosticEnd13 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.claimAccountFreeUsage")) != null ? _c : (() => {
-  });
-  try {
-    if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
-    try {
-      const response = await requestAuthenticatedBilling(state, persist, {
-        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
-        throw: false
-      });
-      if (response.status === 402) return { kind: "insufficient" };
-      if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-      if (response.status < 200 || response.status >= 300) return { kind: "error" };
-      const remaining = Math.max(0, Number((_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.remaining) || 0);
-      new import_obsidian6.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} free credits.`);
-      new import_obsidian6.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} free credits.`);
-      return { kind: "ok", remaining };
-    } catch (error) {
-      diagnostics.failure("constance-account.caught_extra_1", error);
-      (_g = (_f = diagnostics) == null ? void 0 : _f.legacy) == null ? void 0 : _g.call(_f, "error", "constance-account.constance_account_free_usage_claim_failed");
-      return { kind: "error" };
-    }
-  } catch (diagnosticError13) {
-    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "constance-account.claimAccountFreeUsage", diagnosticError13);
-    throw diagnosticError13;
-  } finally {
-    diagnosticEnd13();
-  }
-}
-async function spendAccountCredits(state, persist, appId, installationId, eventId, amount) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
-  const diagnosticEnd14 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "constance-account.spendAccountCredits")) != null ? _c : (() => {
-  });
-  try {
-    if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
-    try {
-      const response = await requestAuthenticatedBilling(state, persist, {
-        url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
-        throw: false
-      });
-      if (response.status === 402) return { kind: "insufficient" };
-      if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-      if (response.status < 200 || response.status >= 300) return { kind: "error" };
-      const balance = Number((_f = (_e = (_d = response.json) == null ? void 0 : _d.data) == null ? void 0 : _e.credits) == null ? void 0 : _f.balance);
-      if (!Number.isFinite(balance)) return { kind: "error" };
-      const remaining = Math.max(0, balance);
-      new import_obsidian6.Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} purchased credits.`);
-      new import_obsidian6.Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} purchased credits.`);
-      return { kind: "ok", balance: remaining };
-    } catch (error) {
-      diagnostics.failure("constance-account.caught_extra_2", error);
-      (_h = (_g = diagnostics) == null ? void 0 : _g.legacy) == null ? void 0 : _h.call(_g, "error", "constance-account.constance_authenticated_credit_spend_failed");
-      return { kind: "error" };
-    }
-  } catch (diagnosticError14) {
-    (_j = (_i = diagnostics) == null ? void 0 : _i.failure) == null ? void 0 : _j.call(_i, "constance-account.spendAccountCredits", diagnosticError14);
-    throw diagnosticError14;
-  } finally {
-    diagnosticEnd14();
-  }
+  return { kind: "error" };
 }
 function addBillingAccountSettings(containerEl, adapter) {
   resumeAccountCheckout({ ...adapter, refreshSession: () => refreshBillingSession(adapter.state, adapter.persist) });
@@ -1044,11 +1068,10 @@ function addBillingAccountSettings(containerEl, adapter) {
   renderAccountGuidance(section, { appId: adapter.appId, connected: adapter.state.billingAccountLinked && Boolean(adapter.state.billingAccessToken || adapter.state.billingRefreshToken), defaultAllowance: 2e3, unit: "characters", workflow: "Select text or open a Markdown note, then run a Culebra correction command. You can undo the changes." });
   section.createEl("h3", { text: "Account and billing" });
   const state = adapter.state;
-  const numericBalances = Object.entries(state).filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number").map(([key, value]) => `${key.replace(/^cached/i, "").replace(/^free/i, "Free ").replace(/^purchased/i, "Purchased ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").trim().toLowerCase()}: ${Number(value).toLocaleString()}`);
   const accountStatus = adapter.state.billingAccountLinked ? `Signed in as ${adapter.state.billingEmail || "your account"}` : state.billingRegistrationPending ? `Registered as ${adapter.state.billingEmail} but not signed in. Check your email, click the confirmation link, then sign in here.` : "Not signed in.";
   section.createEl("p", {
     cls: "constance-account-status",
-    text: numericBalances.length ? `${accountStatus} Balance \u2014 ${numericBalances.join("; ")}` : accountStatus
+    text: accountStatus
   });
   if (!adapter.state.billingAccountLinked) {
     new import_obsidian6.Setting(section).setName("Email").setDesc("Use the email associated with your account and purchases.").addText((text) => text.setPlaceholder("you@example.com").setValue(adapter.state.billingEmail).setDisabled(adapter.state.billingAccountLinked).onChange(async (value) => {
@@ -1074,7 +1097,7 @@ function addBillingAccountSettings(containerEl, adapter) {
     new import_obsidian6.Setting(section).setName("Password").setDesc("Your password is used to sign in and is not saved by the plugin.").addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.maxLength = 256;
-      text.setPlaceholder("8 to 128 characters").onChange((value) => {
+      text.setPlaceholder("12 or more characters for a new account").onChange((value) => {
         return diagnostics.guard("constance-account.control_5", () => {
           var _a;
           const diagnosticAction16 = () => {
@@ -1107,6 +1130,7 @@ function addBillingAccountSettings(containerEl, adapter) {
             (_d = adapter.refresh) == null ? void 0 : _d.call(adapter);
           } catch (error) {
             diagnostics.failure("constance-account.caught_7", error);
+            new import_obsidian6.Notice(error instanceof Error ? error.message : "Account connection failed. Try again.");
             (_e = adapter.refresh) == null ? void 0 : _e.call(adapter);
           } finally {
             button.setDisabled(adapter.state.billingAccountLinked || pendingConnections.has(adapter.state));
@@ -1126,12 +1150,13 @@ function addBillingAccountSettings(containerEl, adapter) {
       });
       try {
         const refreshToken = adapter.state.billingRefreshToken;
+        const accessToken = adapter.state.billingAccessToken;
         clearBillingSession(adapter.state);
         state.billingRegistrationPending = false;
         await adapter.persist();
         if (refreshToken) void diagnostics.guard("constance-account.background_9", () => {
           var _a2, _b2, _c2;
-          return ((_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.addBillingAccountSettings", import_obsidian6.requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })) != null ? _c2 : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })).catch((rejectedError1) => {
+          return ((_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.constance-account.addBillingAccountSettings", import_obsidian6.requestUrl, { url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })) != null ? _c2 : (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })).catch((rejectedError1) => {
             diagnostics.failure("constance-account.rejected_2", rejectedError1);
           });
         });
@@ -1145,13 +1170,19 @@ function addBillingAccountSettings(containerEl, adapter) {
       }
     });
   }));
-  if (!adapter.state.billingAccountLinked) new import_obsidian6.Setting(section).setName("Forgot password?").setDesc("Reset your account password in your browser.").addButton((button) => button.setButtonText("Open reset page").onClick(() => {
-    return diagnostics.guard("constance-account.control_10", () => {
-      var _a;
-      const diagnosticAction19 = () => window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank");
-      return ((_a = diagnostics) == null ? void 0 : _a.run) ? diagnostics.run("control.forgot_password_.onClick", diagnosticAction19) : diagnosticAction19();
-    });
-  }));
+  if (!adapter.state.billingAccountLinked) {
+    for (const [purpose, name] of [["reset", "Forgot password?"], ["verify", "Resend verification email"]]) {
+      new import_obsidian6.Setting(section).setName(name).addButton((button) => button.setButtonText("Send email").onClick(async () => {
+        try {
+          const response = await (0, import_obsidian6.requestUrl)({ url: `${CONSTANCE_API}/auth/recovery`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: adapter.state.billingEmail.trim(), purpose }), throw: false });
+          if (response.status !== 202) throw new Error("Email could not be requested. Try again.");
+          new import_obsidian6.Notice("If eligible, an email has been queued. Check your inbox and spam.");
+        } catch (error) {
+          diagnostics.failure("constance-account.recovery", error);
+        }
+      }));
+    }
+  }
   const firstHeading = containerEl.querySelector(":scope > h1, :scope > h2");
   if (firstHeading == null ? void 0 : firstHeading.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
   else containerEl.prepend(section);
@@ -1186,195 +1217,169 @@ async function showAccountWelcome(plugin, state, persist) {
   }
 }
 
-// publish/loyalty-discount.ts
-function renderLoyaltyDiscount(root, pricesBelow = true) {
-  const doc = root.ownerDocument;
-  const box = doc.createElement("div");
-  box.className = "loyalty-discount-offer";
-  box.style.cssText = "padding:14px;margin:12px 0;border:1px solid var(--interactive-accent,var(--accent,var(--brand,#6366f1)));border-radius:8px;background:var(--background-secondary,var(--surface,transparent));line-height:1.5";
+// publish/billing-progress.ts
+function watchCheckoutProgress(host, state) {
+  var _a;
+  const doc = host.ownerDocument;
+  const panel = doc.createElement("section");
+  panel.className = "checkout-progress";
+  panel.hidden = true;
   const title = doc.createElement("strong");
-  title.textContent = "Thank you for choosing this app!";
-  const offer = doc.createElement("p");
-  offer.style.margin = "8px 0";
-  offer.append(doc.createTextNode(pricesBelow ? "Get 50% off all prices below with coupon " : "Get 50% off with coupon "));
-  const code = doc.createElement("code");
-  code.textContent = "OBSLOYALE3";
-  offer.append(code, doc.createTextNode("."));
-  const instructions = doc.createElement("p");
-  instructions.style.margin = "8px 0";
-  instructions.textContent = "On the payment page, click Add discount on the left and enter the coupon code.";
-  const validity = doc.createElement("p");
-  validity.style.margin = "8px 0";
-  validity.textContent = "Valid until the end of this quarter.";
-  const button = doc.createElement("button");
-  button.type = "button";
-  button.textContent = "Copy code";
-  const status = doc.createElement("span");
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  status.style.marginLeft = "8px";
-  button.addEventListener("click", async () => {
-    var _a, _b;
-    try {
-      await ((_a = doc.defaultView) == null ? void 0 : _a.navigator.clipboard.writeText("OBSLOYALE3"));
-      if (!((_b = doc.defaultView) == null ? void 0 : _b.navigator.clipboard)) throw new Error("Clipboard unavailable");
-      status.textContent = "Code copied.";
-    } catch (error) {
-      const focused = doc.activeElement;
-      const field = doc.createElement("textarea");
-      field.value = "OBSLOYALE3";
-      field.style.cssText = "position:fixed;opacity:0;pointer-events:none";
-      doc.body.appendChild(field);
-      field.select();
-      let copied = false;
-      try {
-        copied = doc.execCommand("copy");
-      } catch (copyError) {
-        console.error("Coupon copy failed", copyError);
-      } finally {
-        field.remove();
-        if (focused instanceof HTMLElement) focused.focus();
+  title.setAttribute("role", "status");
+  const elapsed = doc.createElement("time");
+  elapsed.setAttribute("role", "timer");
+  elapsed.setAttribute("aria-live", "off");
+  const top = doc.createElement("div");
+  top.className = "checkout-progress-top";
+  top.append(title, elapsed);
+  const bar = doc.createElement("progress");
+  bar.setAttribute("aria-label", "Purchase in progress");
+  const steps = doc.createElement("p");
+  steps.className = "checkout-progress-steps";
+  steps.textContent = "1. Open checkout / 2. Complete payment / 3. Verify access";
+  const detail = doc.createElement("p");
+  detail.setAttribute("role", "status");
+  const estimate = doc.createElement("p");
+  estimate.className = "checkout-progress-note";
+  panel.append(top, bar, steps, detail, estimate);
+  host.appendChild(panel);
+  const text = (el, value) => {
+    if (el.textContent !== value) el.textContent = value;
+  };
+  let seen = false, started = Date.now(), lastKey = "";
+  const refresh = () => {
+    const pending = state.pendingAccountCheckout;
+    const legacy = ["pendingPriceCheckout", "pendingPaddleCheckout", "previewPendingCheckout"].some((key) => !!state[key]);
+    if (legacy || pending && pending.version !== 2) {
+      elapsed.hidden = true;
+      panel.hidden = false;
+      seen = true;
+      bar.hidden = true;
+      text(title, "Purchase needs attention");
+      text(detail, "An older purchase is retained. Connect its account and check purchase history before buying again.");
+      text(estimate, "Contact support if this purchase cannot be confirmed.");
+    } else if (pending && state.billingAccountLinked && pending.email === state.billingEmail.trim().toLowerCase()) {
+      panel.hidden = false;
+      seen = true;
+      bar.hidden = false;
+      elapsed.hidden = false;
+      if (lastKey !== pending.key) {
+        const saved = Number(pending.startedAt), now = Date.now();
+        started = Number.isFinite(saved) && saved > 0 && saved <= now ? saved : now;
+        lastKey = pending.key;
       }
-      status.textContent = copied ? "Code copied." : "Select and copy OBSLOYALE3 manually.";
+      const seconds = Math.max(0, Math.floor((Date.now() - started) / 1e3));
+      elapsed.textContent = "Elapsed " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+      text(title, pending.cancelRequested ? "Cancellation is being confirmed" : pending.status === "paid" ? "Verifying your payment" : pending.opened ? "Continue in secure checkout" : "Preparing your secure checkout");
+      text(detail, pending.cancelRequested ? "Your purchase is retained until Constance confirms cancellation or payment. Check payment before buying again." : pending.status === "paid" ? "Your payment was received. Constance is verifying your access. Please do not pay again." : pending.opened ? "Complete payment in your browser. Your balance updates after Constance verifies your receipt. Please do not pay again while confirmation is pending." : "We are requesting your payment link. Please keep this view open while checkout starts. Your purchase is saved and can be recovered.");
+      text(estimate, seconds >= 180 ? "This is taking longer than the 3 minute estimate. Your provider may need more time. Use Check payment before trying again." : "Allow around 3 minutes for checkout and confirmation. This is an estimate; your bank or payment provider may take longer.");
+    } else if (seen) {
+      bar.hidden = true;
+      elapsed.hidden = true;
+      text(title, pending ? "Connect the purchasing account" : "Purchase status updated");
+      text(detail, "Review your account balance and purchase history for the confirmed result.");
+      text(estimate, "Use the billing controls to refresh your access or review your purchases.");
     }
-  });
-  box.append(title, offer, instructions, validity, button, status);
-  root.appendChild(box);
-  return box;
+  };
+  const timer = setInterval(() => {
+    if (panel.isConnected === false) clearInterval(timer);
+    else refresh();
+  }, 1e3);
+  (_a = timer.unref) == null ? void 0 : _a.call(timer);
+  refresh();
+  return { refresh };
 }
 
 // publish/billing-catalog.ts
 var import_obsidian7 = require("obsidian");
-var BASE = "https://app.tutivsoft.com/api/v1";
-async function send2(host, path, body, idempotencyKey) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
-  const diagnosticEnd1 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "billing-catalog.send")) != null ? _c : (() => {
-  });
-  try {
-    if (!host.state.billingAccessToken && host.state.billingRefreshToken) {
-      await refreshBillingSession(host.state, host.persist);
-    }
-    const request = () => {
-      var _a2, _b2, _c2;
-      return (_c2 = (_b2 = (_a2 = diagnostics) == null ? void 0 : _a2.request) == null ? void 0 : _b2.call(_a2, "network.billing-catalog.send", import_obsidian7.requestUrl, {
-        url: `${BASE}${path}`,
-        method: body ? "POST" : "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...host.state.billingAccessToken ? { Authorization: `Bearer ${host.state.billingAccessToken}` } : {},
-          ...idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
-        },
-        ...body ? { body: JSON.stringify(body) } : {},
-        throw: false
-      })) != null ? _c2 : (0, import_obsidian7.requestUrl)({
-        url: `${BASE}${path}`,
-        method: body ? "POST" : "GET",
-        headers: {
-          "Content-Type": "application/json",
-          ...host.state.billingAccessToken ? { Authorization: `Bearer ${host.state.billingAccessToken}` } : {},
-          ...idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
-        },
-        ...body ? { body: JSON.stringify(body) } : {},
-        throw: false
-      });
-    };
-    let response = await request();
-    if (response.status === 401 && host.state.billingRefreshToken && await refreshBillingSession(host.state, host.persist)) {
-      response = await request();
-    }
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error(((_e = (_d = response.json) == null ? void 0 : _d.detail) == null ? void 0 : _e.message) || (typeof ((_f = response.json) == null ? void 0 : _f.detail) === "string" ? response.json.detail : `Billing is temporarily unavailable. Try again shortly.`));
-    }
-    return await ((_g = response.json) == null ? void 0 : _g.data);
-  } catch (diagnosticError1) {
-    (_i = (_h = diagnostics) == null ? void 0 : _h.failure) == null ? void 0 : _i.call(_h, "billing-catalog.send", diagnosticError1);
-    throw diagnosticError1;
-  } finally {
-    diagnosticEnd1();
-  }
-}
 function joinPublicPacks(products, appId) {
-  if ((products == null ? void 0 : products.app_id) !== appId || !Array.isArray(products == null ? void 0 : products.packs)) return [];
-  return products.packs.map((pack) => {
-    const priceId = typeof (pack == null ? void 0 : pack.price_id) === "string" ? pack.price_id : "";
-    const units = Number(pack == null ? void 0 : pack.native_units);
-    const unit = typeof (pack == null ? void 0 : pack.unit) === "string" && pack.unit.trim() ? pack.unit.trim() : "credits";
-    const amount = typeof (pack == null ? void 0 : pack.formatted_total) === "string" ? pack.formatted_total : "";
-    const available = (pack == null ? void 0 : pack.available) === true && !!priceId && Number.isSafeInteger(units) && units > 0 && !!amount;
-    return { pack, priceId, units, unit, amount, available };
+  if ((products == null ? void 0 : products.app_id) !== appId || !Array.isArray(products.offers)) return [];
+  return products.offers.filter((offer) => (offer == null ? void 0 : offer.kind) === "credits").map((pack) => {
+    var _a, _b;
+    const priceId = typeof pack.code === "string" ? pack.code : "";
+    const units = (_a = pack.grants) == null ? void 0 : _a.units, unit = (_b = pack.grants) == null ? void 0 : _b.unit;
+    const available = !!priceId && unit === BILLING_UNIT && Number.isSafeInteger(units) && units > 0 && Number.isInteger(pack.currency_exponent) && pack.currency_exponent >= 0 && pack.currency_exponent <= 4 && Number.isSafeInteger(pack.amount) && pack.amount > 0 && typeof pack.currency === "string" && /^[A-Z]{3}$/.test(pack.currency);
+    let amount = "";
+    if (available) {
+      try {
+        amount = new Intl.NumberFormat(void 0, { style: "currency", currency: pack.currency }).format(pack.amount / 10 ** pack.currency_exponent);
+      } catch (_) {
+      }
+    }
+    return { pack, priceId, units, unit, amount, available: available && !!amount };
   });
 }
 function addLivePacks(root, host) {
-  var _a;
-  (_a = host.resumeCheckout) == null ? void 0 : _a.call(host);
+  const checkoutHost = { ...host, syncBalance: async () => {
+    await host.syncBalance();
+  }, refreshSession: () => refreshBillingSession(host.state, host.persist) };
+  const progress = watchCheckoutProgress(root, host.state);
+  resumeAccountCheckout(checkoutHost);
+  let recovery;
+  const showRecovery = () => {
+    if (recovery || !host.state.pendingAccountCheckout) return;
+    recovery = new import_obsidian7.Setting(root).setName("Current purchase").setDesc("Cancels an unpaid purchase so you can buy again. Completed purchases stay safe.").addButton((button) => button.setButtonText("Check payment").onClick(async () => {
+      button.setDisabled(true);
+      try {
+        await recoverAccountCheckout(checkoutHost);
+      } finally {
+        button.setDisabled(false);
+      }
+    })).addButton((button) => button.setButtonText("Cancel current purchase").onClick(async () => {
+      button.setDisabled(true);
+      try {
+        await cancelAccountCheckout(checkoutHost);
+      } finally {
+        button.setDisabled(false);
+      }
+    }));
+  };
+  showRecovery();
+  let selectedCurrency = "USD";
+  let renderOffers = () => {
+  };
   const section = root.createDiv({ cls: "ui-billing-packs" });
-  renderLoyaltyDiscount(section);
-  const status = section.createEl("p", { text: "Loading prices\u2026" });
-  void diagnostics.guard("billing-catalog.background_1", () => send2(host, `/billing/public-products?app_id=${encodeURIComponent(host.appId)}`).then((products) => {
-    const offers = joinPublicPacks(products, host.appId);
-    if (!offers.length) throw new Error("No credit packs are currently available.");
-    status.setText("Applicable taxes are calculated at checkout.");
-    for (const { pack, priceId, units, unit, amount, available } of offers) {
-      const description = [pack == null ? void 0 : pack.description, Number.isSafeInteger(units) && units > 0 ? `${units.toLocaleString()} ${unit}` : "", available ? "" : (pack == null ? void 0 : pack.availability_reason) || "Current price unavailable"].filter(Boolean).join(" \xB7 ");
-      const row = new import_obsidian7.Setting(section).setName(pack.price_name || pack.name || pack.code || "Credit pack").setDesc(description);
-      row.addButton((button) => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available).onClick(async () => {
-        return diagnostics.guard("billing-catalog.control_2", async () => {
-          var _a2, _b, _c, _d, _e, _f, _g, _h;
-          const diagnosticEnd2 = (_c = (_b = (_a2 = diagnostics) == null ? void 0 : _a2.start) == null ? void 0 : _b.call(_a2, "control.3426.onClick")) != null ? _c : (() => {
-          });
-          try {
+  new import_obsidian7.Setting(section).setName("Currency").addDropdown((dropdown) => {
+    dropdown.addOption("USD", "USD");
+    dropdown.setValue("USD").onChange((value) => {
+      selectedCurrency = value;
+      renderOffers();
+    });
+  });
+  const status = section.createEl("p", { text: "Loading prices..." });
+  const packs = section.createDiv();
+  void diagnostics.guard("billing-catalog.load", async () => {
+    var _a;
+    try {
+      const response = await (0, import_obsidian7.requestUrl)({ url: `${CONSTANCE_API}/billing/offers?app_id=${encodeURIComponent(host.appId)}`, method: "GET", throw: false });
+      if (response.status !== 200) throw new Error("Prices unavailable");
+      const offers = joinPublicPacks((_a = response.json) == null ? void 0 : _a.data, host.appId);
+      if (!offers.length) throw new Error("Prices unavailable");
+      renderOffers = () => {
+        packs.empty();
+        const matching = offers.filter((offer) => offer.pack.currency === selectedCurrency);
+        status.setText(matching.length ? "Applicable taxes are calculated at checkout." : "No packs available in this currency.");
+        for (const { pack, priceId, units, unit, amount, available } of matching) {
+          new import_obsidian7.Setting(packs).setName(pack.name || "Credit offer").setDesc(`${pack.description || ""} ${units == null ? void 0 : units.toLocaleString()} ${unit}. Tax: ${pack.tax_mode || "shown at checkout"}.`).addButton((button) => button.setButtonText(available ? `Buy ${amount}` : "Pricing unavailable").setDisabled(!available).onClick(async () => {
             button.setDisabled(true);
             try {
-              if (!host.state.billingAccountLinked) throw new Error("Connect your account before buying credits.");
-              let pending = host.state.previewPendingCheckout;
-              if ((pending == null ? void 0 : pending.owner) && pending.owner !== host.state.billingEmail) throw new Error("Sign in to the account owning the pending purchase.");
-              if (pending == null ? void 0 : pending.checkout_id) {
-                const checkout2 = await send2(host, `/billing/checkouts/${encodeURIComponent(pending.checkout_id)}`);
-                if (checkout2.settled === true || ["completed", "fulfilled", "canceled", "cancelled", "failed", "expired", "voided", "rejected"].includes(checkout2.status)) {
-                  host.state.previewPendingCheckout = void 0;
-                  await host.persist();
-                  await ((_d = host.syncBalance) == null ? void 0 : _d.call(host));
-                  return;
-                }
-              }
-              if ((pending == null ? void 0 : pending.price_id) && pending.price_id !== priceId) throw new Error("A purchase is pending. Resolve its status before another purchase.");
-              const legacyPlan = pending && !pending.price_id ? pending.plan_code : void 0;
-              const request = pending || { price_id: priceId, idempotency_key: `checkout_${crypto.randomUUID()}`, owner: host.state.billingEmail };
-              host.state.previewPendingCheckout = request;
-              await host.persist();
-              const oldCheckout = !!legacyPlan;
-              const checkout = await send2(host, `/billing/${oldCheckout ? "checkout" : "checkout-price"}`, {
-                app_id: host.appId,
-                installation_id: host.installationId,
-                ...oldCheckout ? { plan_code: legacyPlan } : { price_id: request.price_id },
-                quantity: 1
-              }, request.idempotency_key);
-              if (!(checkout == null ? void 0 : checkout.checkout_id)) throw new Error("Checkout is still being confirmed; retry the same purchase to recover it safely.");
-              request.checkout_id = String(checkout.checkout_id);
-              await host.persist();
-              await ((_e = host.syncBalance) == null ? void 0 : _e.call(host));
-              (_f = host.resumeCheckout) == null ? void 0 : _f.call(host);
-              if (typeof checkout.checkout_url === "string" && checkout.checkout_url) window.open(checkout.checkout_url, "_blank", "noopener");
-              else new import_obsidian7.Notice("Checkout is still being confirmed. Its status will refresh when you return.");
-            } catch (error) {
-              diagnostics.failure("billing-catalog.caught_3", error);
-              new import_obsidian7.Notice(error instanceof Error ? error.message : "Checkout unavailable.");
+              const operation = openAccountCheckout(checkoutHost, priceId);
+              progress.refresh();
+              await operation;
             } finally {
+              progress.refresh();
               button.setDisabled(!available);
+              showRecovery();
             }
-          } catch (diagnosticError2) {
-            (_h = (_g = diagnostics) == null ? void 0 : _g.failure) == null ? void 0 : _h.call(_g, "control.3426.onClick", diagnosticError2);
-            throw diagnosticError2;
-          } finally {
-            diagnosticEnd2();
-          }
-        });
-      }));
+          }));
+        }
+      };
+      renderOffers();
+    } catch (error) {
+      diagnostics.failure("billing-catalog.load", error);
+      status.setText("Pricing temporarily unavailable. Refresh before buying.");
     }
-  }).catch((rejectedError1) => {
-    diagnostics.failure("billing-catalog.rejected_2", rejectedError1);
-    return status.setText("Pricing temporarily unavailable. Refresh before buying.");
-  }));
+  });
 }
 
 // publish/main.ts
@@ -2085,7 +2090,6 @@ Hard rules:
 - If there are more than one blank line between paragraphs, collapse them to one blank line.
 - Clean repeated spaces where safe, but do not damage code, tables, URLs, or intentional Markdown spacing.
 - Return only the corrected text. Do not wrap it in code fences. Do not add commentary.`;
-var CONSTANCE_BASE_URL = "https://app.tutivsoft.com";
 var CONSTANCE_APP_ID = "culebra-ai-spell-correct";
 function generateSecureDeviceId() {
   const bytes = new Uint8Array(16);
@@ -2105,7 +2109,7 @@ async function fetchConstanceEntitlements(plugin) {
     if (!plugin.settings.billingAccessToken || !plugin.settings.billingAccountLinked) return null;
     const query = new URLSearchParams({ app_id: CONSTANCE_APP_ID, installation_id: plugin.settings.constanceDeviceId });
     const response = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
-      url: `${CONSTANCE_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+      url: `${CONSTANCE_API}/billing/entitlements/me?${query.toString()}`,
       method: "GET",
       throw: false
     });
@@ -2116,7 +2120,7 @@ async function fetchConstanceEntitlements(plugin) {
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`Your account could not be updated. Check your connection and try again.`);
     }
-    return await ((_d = response.json) == null ? void 0 : _d.data);
+    return accountBalance((_d = response.json) == null ? void 0 : _d.data, CONSTANCE_APP_ID);
   } catch (diagnosticError5) {
     (_f = (_e = diagnostics) == null ? void 0 : _e.failure) == null ? void 0 : _f.call(_e, "main.fetchConstanceEntitlements", diagnosticError5);
     throw diagnosticError5;
@@ -2129,18 +2133,14 @@ async function spendConstanceCredits(plugin, amount, stableEventId) {
   const diagnosticEnd6 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.spendConstanceCredits")) != null ? _c : (() => {
   });
   try {
-    if (stableEventId.startsWith("consume_")) {
-      const result2 = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
-      if (result2.kind === "ok") {
-        plugin.settings.freeCredits = (_d = result2.freeRemaining) != null ? _d : plugin.settings.freeCredits;
-        return { kind: "ok", balance: (_e = result2.balance) != null ? _e : plugin.settings.purchasedCredits };
+    if (stableEventId.startsWith("v2consume_")) {
+      const result = await consumeAccountUnits({ state: plugin.settings, appId: CONSTANCE_APP_ID, installationId: plugin.settings.constanceDeviceId, refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings()) }, stableEventId, amount);
+      if (result.kind === "ok") {
+        plugin.settings.freeCredits = (_d = result.freeRemaining) != null ? _d : plugin.settings.freeCredits;
+        return { kind: "ok", balance: (_e = result.balance) != null ? _e : plugin.settings.purchasedCredits };
       }
-      return { kind: result2.kind === "insufficient" ? "insufficient" : "error" };
+      return { kind: result.kind === "insufficient" ? "insufficient" : "error" };
     }
-    const result = await spendAccountCredits(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, stableEventId, amount);
-    if (result.kind === "ok" || result.kind === "insufficient" || result.kind === "error") return await result;
-    clearBillingSession(plugin.settings);
-    await plugin.saveSettings();
     return { kind: "error" };
   } catch (diagnosticError6) {
     (_g = (_f = diagnostics) == null ? void 0 : _f.failure) == null ? void 0 : _g.call(_f, "main.spendConstanceCredits", diagnosticError6);
@@ -2150,7 +2150,7 @@ async function spendConstanceCredits(plugin, amount, stableEventId) {
   }
 }
 async function syncPurchasedCreditsFromConstance(plugin, manual = false) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
   const diagnosticEnd7 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.syncPurchasedCreditsFromConstance")) != null ? _c : (() => {
   });
   try {
@@ -2159,10 +2159,11 @@ async function syncPurchasedCreditsFromConstance(plugin, manual = false) {
       appId: CONSTANCE_APP_ID,
       installationId: plugin.settings.constanceDeviceId,
       persist: () => plugin.saveSettings(),
-      syncBalance: () => syncPurchasedCreditsFromConstance(plugin),
+      syncBalance: () => syncPurchasedCreditsFromConstance(plugin, true),
       refreshSession: () => refreshBillingSession(plugin.settings, () => plugin.saveSettings())
     });
     if (!plugin.settings.constanceDeviceId) {
+      if (manual) throw new Error("Connect your account before refreshing the balance.");
       return;
     }
     try {
@@ -2173,14 +2174,23 @@ async function syncPurchasedCreditsFromConstance(plugin, manual = false) {
       plugin.settings.freeCredits = freeRemaining;
       plugin.settings.purchasedCredits = Math.max(0, Number(serverBalance) || 0);
       await plugin.saveSettings();
-      (_h = plugin.refreshBillingCredits) == null ? void 0 : _h.call(plugin);
+      const acknowledgement = await requestAuthenticatedBilling(plugin.settings, () => plugin.saveSettings(), {
+        url: CONSTANCE_API + "/billing/sync",
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: CONSTANCE_APP_ID, revision: entitlement.revision }),
+        throw: false
+      });
+      if (acknowledgement.status !== 200 || !Number.isSafeInteger((_i = (_h = acknowledgement.json) == null ? void 0 : _h.data) == null ? void 0 : _i.recorded_revision) || acknowledgement.json.data.recorded_revision < entitlement.revision)
+        throw new Error("Your balance was saved but its acknowledgement is pending. Refresh again.");
+      (_j = plugin.refreshBillingCredits) == null ? void 0 : _j.call(plugin);
     } catch (error) {
       diagnostics.failure("main.caught_1", error);
       if (manual) throw error;
-      (_j = (_i = diagnostics) == null ? void 0 : _i.legacy) == null ? void 0 : _j.call(_i, "error", "main.culebra_constance_entitlement_sync_failed");
+      (_l = (_k = diagnostics) == null ? void 0 : _k.legacy) == null ? void 0 : _l.call(_k, "error", "main.culebra_constance_entitlement_sync_failed");
     }
   } catch (diagnosticError7) {
-    (_l = (_k = diagnostics) == null ? void 0 : _k.failure) == null ? void 0 : _l.call(_k, "main.syncPurchasedCreditsFromConstance", diagnosticError7);
+    (_n = (_m = diagnostics) == null ? void 0 : _m.failure) == null ? void 0 : _n.call(_m, "main.syncPurchasedCreditsFromConstance", diagnosticError7);
     throw diagnosticError7;
   } finally {
     diagnosticEnd7();
@@ -2193,6 +2203,7 @@ async function retryPendingSpendEvents(plugin) {
   try {
     const pending = [...(_d = plugin.settings.pendingSpendEvents) != null ? _d : []];
     for (const event of pending) {
+      if (!event.eventId.startsWith("v2consume_") || event.owner !== plugin.settings.billingEmail.trim().toLowerCase()) break;
       if (event.kind === "free") {
         const result2 = await claimAccountFreeUsage(plugin.settings, () => plugin.saveSettings(), CONSTANCE_APP_ID, plugin.settings.constanceDeviceId, event.eventId, event.amount);
         if (result2.kind === "error" || result2.kind === "auth-required") break;
@@ -2321,7 +2332,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian10.Plugin {
       this.settings.billingAccessToken = typeof this.settings.billingAccessToken === "string" ? this.settings.billingAccessToken : "";
       this.settings.billingRefreshToken = typeof this.settings.billingRefreshToken === "string" ? this.settings.billingRefreshToken : "";
       this.settings.billingAccessExpiresAt = Number(this.settings.billingAccessExpiresAt) || 0;
-      this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken);
+      this.settings.billingAccountLinked = this.settings.billingAccountLinked === true && Boolean(this.settings.billingAccessToken) && Boolean(this.settings.billingV2InstallationId && this.settings.billingV2InstallationToken);
       await this.saveSettings();
       if (!this.settings.onboardingSeen) {
         this.settings.onboardingSeen = true;
@@ -2443,7 +2454,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian10.Plugin {
           const diagnosticEnd16 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.background.20331")) != null ? _c : (() => {
           });
           try {
-            const settled = checkoutId ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this) }, checkoutId).catch((rejectedError3) => {
+            const settled = checkoutId ? await pollAuthenticatedCheckout({ state: this.settings, appId: CONSTANCE_APP_ID, installationId: this.settings.constanceDeviceId, persist: () => this.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this, true) }, checkoutId).catch((rejectedError3) => {
               diagnostics.failure("main.rejected_4", rejectedError3);
               return false;
             }) : false;
@@ -2480,8 +2491,8 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian10.Plugin {
         new import_obsidian10.Notice("Culebra: a previous charge is still being confirmed. No correction was applied.");
         return false;
       }
-      const stableEventId = `consume_${generateEventId()}`;
-      this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost });
+      const stableEventId = `v2consume_${generateEventId()}`;
+      this.settings.pendingSpendEvents.push({ eventId: stableEventId, amount: cost, owner: this.settings.billingEmail.trim().toLowerCase() });
       try {
         await this.saveSettings();
       } catch (error) {
@@ -2863,11 +2874,11 @@ var CulebraSettingTab = class extends import_obsidian10.PluginSettingTab {
         diagnosticStage38();
         const diagnosticStage39 = (_U = (_T = (_S = diagnostics) == null ? void 0 : _S.start) == null ? void 0 : _T.call(_S, "settings.render.account")) != null ? _U : (() => {
         });
-        addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin), refresh: () => this.display() });
+        addBillingAccountSettings(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, appVersion: this.plugin.manifest.version, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin, true), refresh: () => this.display() });
         diagnosticStage39();
         const diagnosticStage40 = (_X = (_W = (_V = diagnostics) == null ? void 0 : _V.start) == null ? void 0 : _W.call(_V, "settings.render.stage_10")) != null ? _X : (() => {
         });
-        addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin) });
+        addLivePacks(containerEl, { state: this.plugin.settings, appId: CONSTANCE_APP_ID, installationId: this.plugin.settings.constanceDeviceId, persist: () => this.plugin.saveSettings(), syncBalance: () => syncPurchasedCreditsFromConstance(this.plugin, true) });
         diagnosticStage40();
         const diagnosticStage41 = (__ = (_Z = (_Y = diagnostics) == null ? void 0 : _Y.start) == null ? void 0 : _Z.call(_Y, "settings.render.refresh_balance")) != null ? __ : (() => {
         });

@@ -1,73 +1,29 @@
 # Culebra AI Spell Correct
 
-Version **4.4.70** prepares a complete Community update with matching version metadata and release assets.
+Correct spelling, grammar and punctuation in selected text or Markdown notes.
 
-Correct spelling, grammar and punctuation without leaving your Obsidian note.
+## Use
 
-**Best for:** Obsidian users polishing notes, drafts and research text.
+Install or update the plugin through Obsidian Community plugins, enable it, and open its settings. Use the existing plugin commands for the selected note, text or files. Existing preferences and local recovery records are retained.
 
-## Top 10 features
+## Account and billing
 
-1. Correct selected text.
-2. Correct a whole Markdown note.
-3. Use the command palette.
-4. Use editor context-menu actions.
-5. Process supported file selections.
-6. Include folder descendants.
-7. Avoid repeated overlapping selections.
-8. Choose optional before-and-after review.
-9. Undo editor edits normally.
-10. See progress and account balance.
+Connect your Constance account in plugin settings. If you create an account, confirm the email link and then connect again. Authentication, current offers, free allowance, purchased balance and payment confirmation use the Constance v2 service at https://app.tutivsoft.com.
 
-## Example workflow
+Current paid names, descriptions, prices, currencies and included units come from the payment provider through Constance. Refresh the displayed offers before buying. If current pricing cannot be verified, buying is unavailable. Only canonical payment fulfillment grants credits. A completed purchase stays saved until the refreshed balance is saved and acknowledged. Pending requests retain their original identity after a retry or restart. Use Check payment or Cancel current purchase in the billing section when needed.
 
-**Before:** A note reads: “The meeting are on Thrusday.”
+New purchases use Paddle and USD. Existing historical purchases retain their original provider. No payment credentials are bundled in the plugin.
 
-**After:** Request a correction such as “The meeting is on Thursday,” with optional comparison before applying.
+## Privacy and recovery
 
-## Pricing
+Account requests send authentication and billing information to Constance. Passwords are not saved. Session credentials and recovery state are kept in local plugin settings. Billing requests do not contain note or image contents. Requested AI actions send the selected input directly to the existing AI service. Basic app usage events use the existing analytics service without note contents. Diagnostic logs stay local unless you copy and share them.
 
-A connected account includes 2,000 characters as a one-time lifetime allowance. Previous use counts toward that allowance.
-
-| Pack | USD price | Included units |
-|---|---:|---:|
-| Starter | $2.00 | 20,000 characters |
-| Standard | $4.00 | 60,000 characters |
-| Pro | $8.00 | 180,000 characters |
-| Ultimate | $14.00 | 450,000 characters |
-
-Packs are one-time purchases. Purchased units do not expire. Final tax and local currency are shown at checkout.
-
-## What to know
-
-Requested corrections send the chosen note text to an online AI service.
-
----
-
-## Discover Culebra AI Spell Correct
-
-Whether you need to correct selected text or correct a whole Markdown note, Culebra AI Spell Correct provides a focused workflow for Obsidian users polishing notes, drafts and research text.
-
-### Common questions
-
-**What can I use it for?**
-
-You can correct selected text, use editor context-menu actions or process supported file selections.
-
-**How do I get started?**
-
-Enable the plugin in Obsidian, open its settings and choose the action that fits your note. Connect your account for metered actions; the settings page shows your remaining allowance and available packs.
-
-### Search description
-
-Correct spelling, grammar and punctuation without leaving your Obsidian note. Designed for Obsidian users polishing notes, drafts and research text.
-
-### Related topics
-
-Obsidian spell checker, AI proofreading Obsidian, Markdown grammar correction, note correction.
+Uncertain older billing records are retained and are never replayed as new v2 charges. Connect the original account and contact support if an earlier operation needs recovery.
 
 ## Release
 
-Version 4.4.70 is prepared for Community review. Publication is pending the matching GitHub release and final Community audit. Version 4.4.68 was published on 17 October 2026.
+Version 4.4.81 is prepared for the manual Community publication checks. A source push alone does not publish a plugin update. Installable updates use a matching version tag and the three assets main.js, manifest.json and styles.css.
 
-The plugin sends requested note text to OpenRouter. Account and purchase operations use Constance. Basic app usage events are sent to https://atcdn.cyou; these events do not contain note text.
+## Support
+
+Use the plugin's Help or Open documentation command and the support links in its manifest. For a billing problem, retain the original purchase or operation identity and use the account portal. Do not share passwords or session tokens.

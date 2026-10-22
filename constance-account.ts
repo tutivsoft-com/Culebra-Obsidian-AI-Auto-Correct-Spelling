@@ -1,3 +1,4 @@
+import { CONSTANCE_API, accountBalance } from "./constance-v2";
 import { applySettingsLayout } from "./settings-layout";
 import { diagnostics } from "./diagnostics";
 import { renderAccountGuidance } from "./account-guidance";
@@ -26,6 +27,10 @@ export interface ConstanceAccountState {
   billingAccessExpiresAt: number;
   billingAccountLinked: boolean;
   billingRegistrationPending?: boolean;
+  billingV2InstallationId?: string;
+  billingV2InstallationToken?: string;
+  billingV2InstallationOwner?: string;
+  billingV2Installations?: Record<string, { id: string; token: string }>;
 }
 
 export interface ConstanceAccountAdapter {
@@ -64,6 +69,7 @@ export type AuthenticatedCheckoutResult =
 
 class ConstanceAccountError extends Error {
   readonly status: number;
+  code?: string;
   constructor(message: string, status: number) {
     super(message);
     this.name = "ConstanceAccountError";
@@ -72,7 +78,7 @@ class ConstanceAccountError extends Error {
 }
 
 function errorDetail(response: { json?: any; text?: string }, fallback: string): string {
-  const payload = response.json?.data || response.json;
+  const payload = response.json?.error || response.json?.data || response.json;
   const detail = payload?.detail;
   const code = detail?.code || payload?.code;
   if (code === "invalid_credentials") return "The email or password is incorrect. Use Forgot password? to reset it.";
@@ -100,77 +106,54 @@ diagnostics.failure("constance-account.caught_1", error);
 } catch (diagnosticError1) { diagnostics?.failure?.("constance-account.linkAuthenticatedInstallation", diagnosticError1); throw diagnosticError1; } finally { diagnosticEnd1(); }
 }
 
-async function authenticate(
-  mode: "login" | "register" | "connect",
-  email: string,
-  password: string,
-  installationId: string,
-): Promise<AuthenticationResult> {
-const diagnosticEnd2 = diagnostics?.start?.("constance-account.authenticate") ?? (() => {});
-try {
-
-  const body = mode !== "login"
-    ? { email, password, external_customer_id: installationId }
-    : { email, password };
-  const response = await (diagnostics?.request?.("network.constance-account.authenticate", requestUrl, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    throw: false,
-  }) ?? requestUrl({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/${mode}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    throw: false,
-  }));
+async function authenticate(mode: "login" | "register" | "connect", email: string, password: string, appId: string): Promise<AuthenticationResult> {
+  const action = mode === "connect" ? "login" : mode;
+  const response = await requestUrl({ url: `${CONSTANCE_API}/auth/${action}`, method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, app_id: appId, ...(action === "login" ? { mode: "customer" } : {}) }), throw: false });
   if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Could not connect your account. Check your connection and try again.`), response.status);
+    const error = new ConstanceAccountError(errorDetail(response, "Could not connect your account. Try again."), response.status);
+    error.code = response.json?.error?.code || response.json?.detail?.code || response.json?.data?.detail?.code;
+    if (mode === "connect" && error.code === "invalid_credentials") return authenticate("register", email, password, appId);
+    throw error;
   }
-  if (response.json?.verification_required === true) return { verificationRequired: true };
-  const token = String(response.json?.access_token || "");
-  const refreshToken = String(response.json?.refresh_token || "");
-  if (token && refreshToken) return { accessToken: token, refreshToken, expiresIn: Number(response.json?.expires_in) || 900 };
+  if (action === "register" && response.status === 202) return { verificationRequired: true };
+  const data = response.json?.data;
+  if (data?.access_token && data?.refresh_token) return { accessToken: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in };
   throw new Error("Could not sign in. Try connecting again.");
-
-} catch (diagnosticError2) { diagnostics?.failure?.("constance-account.authenticate", diagnosticError2); throw diagnosticError2; } finally { diagnosticEnd2(); }
 }
 
 async function linkInstallation(adapter: ConstanceAccountAdapter, token: string): Promise<void> {
-const diagnosticEnd3 = diagnostics?.start?.("constance-account.linkInstallation") ?? (() => {});
-try {
-
-  const response = await (diagnostics?.request?.("network.constance-account.linkInstallation", requestUrl, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      app_id: adapter.appId,
-      installation_id: adapter.installationId,
-      legacy_external_customer_id: adapter.installationId,
-      platform: "obsidian",
-      app_version: adapter.appVersion || undefined,
-    }),
-    throw: false,
-  }) ?? requestUrl({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/installations/link`,
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({
-      app_id: adapter.appId,
-      installation_id: adapter.installationId,
-      legacy_external_customer_id: adapter.installationId,
-      platform: "obsidian",
-      app_version: adapter.appVersion || undefined,
-    }),
-    throw: false,
-  }));
-  if (response.status < 200 || response.status >= 300) {
-    throw new ConstanceAccountError(errorDetail(response, `Could not connect this installation to your account. Try connecting again.`), response.status);
+  const state = adapter.state;
+  const owner = state.billingEmail.trim().toLowerCase();
+  const current = () => state.billingAccessToken === token && state.billingEmail.trim().toLowerCase() === owner;
+  if (!current()) throw new Error("Account connection changed.");
+  if (state.billingV2InstallationOwner && state.billingV2InstallationId && state.billingV2InstallationToken) {
+    state.billingV2Installations ||= {};
+    state.billingV2Installations[state.billingV2InstallationOwner] = { id: state.billingV2InstallationId, token: state.billingV2InstallationToken };
   }
-
-} catch (diagnosticError3) { diagnostics?.failure?.("constance-account.linkInstallation", diagnosticError3); throw diagnosticError3; } finally { diagnosticEnd3(); }
+  if (state.billingV2InstallationOwner !== owner) {
+    const saved = state.billingV2Installations?.[owner];
+    state.billingV2InstallationId = saved?.id;
+    state.billingV2InstallationToken = saved?.token;
+    state.billingV2InstallationOwner = owner;
+  }
+  if (!state.billingV2InstallationId || !state.billingV2InstallationToken) {
+    const created = await requestUrl({ url: `${CONSTANCE_API}/public/installations`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_id: adapter.appId }), throw: false });
+    const data = created.json?.data;
+    if (created.status !== 201 || !data?.installation_id || !data?.installation_token) throw new ConstanceAccountError(errorDetail(created, "Could not register this installation."), created.status);
+    if (!current()) throw new Error("Account connection changed.");
+    state.billingV2InstallationId = String(data.installation_id);
+    state.billingV2InstallationToken = String(data.installation_token);
+    state.billingV2InstallationOwner = owner;
+    await adapter.persist();
+  }
+  // Save again before every retry, including after a previous persistence failure.
+  await adapter.persist();
+  if (!current()) throw new Error("Account connection changed.");
+  const response = await requestUrl({ url: `${CONSTANCE_API}/billing/installations/link`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ installation_id: state.billingV2InstallationId, token: state.billingV2InstallationToken }), throw: false });
+  if (response.status < 200 || response.status >= 300) throw new ConstanceAccountError(errorDetail(response, "Could not connect this installation."), response.status);
+  if (response.json?.data?.linked !== true || response.json.data.installation_id !== state.billingV2InstallationId) throw new Error("Installation ownership could not be verified.");
 }
 
 export async function signInBillingAccount(
@@ -185,11 +168,13 @@ try {
   const journalState = adapter.state as ConstanceAccountState & Record<string, any>;
   const owner = String(journalState.pendingBillingOwnerEmail || "").toLowerCase();
   if (owner && owner !== email) throw new Error(`A pending action belongs to ${owner}. Connect that account to resume it first.`);
+  const pending = [journalState.pendingAccountCheckout, journalState.pendingPriceCheckout, journalState.pendingPaddleCheckout, journalState.previewPendingCheckout, ...(journalState.pendingSpendEvents || [])].filter(Boolean);
+  if (pending.some(item => String(item.owner || item.email || journalState.billingV2InstallationOwner || email).trim().toLowerCase() !== email)) throw new Error("A pending action belongs to another account. Connect that account first.");
 
   if (!email || !email.includes("@")) throw new Error("Enter a valid email address.");
-  if (Array.from(password).length < 8 || Array.from(password).length > 128) throw new Error("Password must be between 8 and 128 characters.");
+  if (Array.from(password).length < 1 || Array.from(password).length > 256) throw new Error("Enter a password of up to 256 characters. New accounts require at least 12 characters.");
   if (!adapter.installationId) throw new Error("The plugin is still starting. Try again shortly.");
-  const result = await authenticate(mode, email, password, adapter.installationId);
+  const result = await authenticate(mode, email, password, adapter.appId);
   if (!result.accessToken) {
     clearBillingSession(adapter.state);
     adapter.state.billingEmail = email;
@@ -215,7 +200,9 @@ try {
   adapter.state.billingAccountLinked = false;
   adapter.state.billingRegistrationPending = false;
   await adapter.persist();
+  if (adapter.state.billingAccessToken !== session.accessToken || adapter.state.billingEmail !== email) throw new Error("Account connection changed. Connect again.");
   await linkAuthenticatedInstallation(adapter, session.accessToken);
+  if (adapter.state.billingAccessToken !== session.accessToken || adapter.state.billingEmail !== email) throw new Error("Account connection changed. Connect again.");
   adapter.state.billingAccountLinked = true;
   await adapter.persist();
   await adapter.syncBalance();
@@ -230,13 +217,13 @@ try {
   const token = verificationToken.trim();
   if (!token) throw new Error("Enter the verification code from your email.");
   const response = await (diagnostics?.request?.("network.constance-account.verifyBillingAccount", requestUrl, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/register/verify`,
+    url: `${CONSTANCE_API}/auth/verify`,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
     throw: false,
   }) ?? requestUrl({
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/register/verify`,
+    url: `${CONSTANCE_API}/auth/verify`,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
@@ -245,9 +232,11 @@ try {
   if (response.status < 200 || response.status >= 300) {
     throw new ConstanceAccountError(errorDetail(response, `Your account could not be verified. Try connecting again.`), response.status);
   }
-  const accessToken = String(response.json?.access_token || "");
-  if (!accessToken) throw new Error("Your email was verified, but sign-in could not be completed. Connect again.");
-  await completeBillingSignIn(adapter, adapter.state.billingEmail.trim().toLowerCase(), { accessToken, refreshToken: String(response.json?.refresh_token || ""), expiresIn: Number(response.json?.expires_in) || 900 });
+  if (response.json?.data?.verified !== true) throw new Error("Email verification could not be confirmed.");
+  clearBillingSession(adapter.state);
+  adapter.state.billingRegistrationPending = false;
+  await adapter.persist();
+  new Notice("Email verified. Connect again to sign in.");
 
 } catch (diagnosticError6) { diagnostics?.failure?.("constance-account.verifyBillingAccount", diagnosticError6); throw diagnosticError6; } finally { diagnosticEnd6(); }
 }
@@ -259,38 +248,40 @@ export function clearBillingSession(state: ConstanceAccountState): void {
   state.billingAccountLinked = false;
 }
 
-let refreshInFlight: Promise<boolean> | null = null;
+const refreshes = new WeakMap<ConstanceAccountState, Promise<boolean>>();
 export async function refreshBillingSession(state: ConstanceAccountState, persist: () => Promise<void>): Promise<boolean> {
 const diagnosticEnd7 = diagnostics?.start?.("constance-account.refreshBillingSession") ?? (() => {});
 try {
 
   if (!state.billingRefreshToken) return false;
-  if (refreshInFlight) return await (refreshInFlight);
+  const pendingRefresh = refreshes.get(state);
+  if (pendingRefresh) return await pendingRefresh;
   const originalToken = state.billingRefreshToken;
-  refreshInFlight = (async () => {
+  const refreshInFlight = (async () => {
 const diagnosticEnd8 = diagnostics?.start?.("constance-account.background.8317") ?? (() => {});
 try {
 
     let response;
     try {
-      response = await (diagnostics?.request?.("network.constance-account.refreshBillingSession", requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }) ?? requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: originalToken }), throw: false }));
+      response = await (diagnostics?.request?.("network.constance-account.refreshBillingSession", requestUrl, { url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false }) ?? requestUrl({ url: `${CONSTANCE_API}/auth/refresh`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: originalToken }), throw: false }));
     } catch (caughtError2) {
 diagnostics.failure("constance-account.caught_3", caughtError2); return false; }
     if (state.billingRefreshToken !== originalToken) return false;
     if (response.status === 401 || response.status === 403) { clearBillingSession(state); await persist(); return false; }
     if (response.status < 200 || response.status >= 300) return false;
-    const access = String(response.json?.access_token || "");
-    const refresh = String(response.json?.refresh_token || "");
+    const access = String(response.json?.data?.access_token || "");
+    const refresh = String(response.json?.data?.refresh_token || "");
     if (!access || !refresh) { clearBillingSession(state); await persist(); return false; }
     state.billingAccessToken = access;
     state.billingRefreshToken = refresh;
-    state.billingAccessExpiresAt = Date.now() + (Number(response.json?.expires_in) || 900) * 1000;
+    state.billingAccessExpiresAt = Date.now() + (Number(response.json?.data?.expires_in) || 900) * 1000;
     await persist();
     return true;
 
 } catch (diagnosticError8) { diagnostics?.failure?.("constance-account.background.8317", diagnosticError8); throw diagnosticError8; } finally { diagnosticEnd8(); }
 })();
-  try { return await refreshInFlight; } finally { refreshInFlight = null; }
+  refreshes.set(state, refreshInFlight);
+  try { return await refreshInFlight; } finally { refreshes.delete(state); }
 
 } catch (diagnosticError7) { diagnostics?.failure?.("constance-account.refreshBillingSession", diagnosticError7); throw diagnosticError7; } finally { diagnosticEnd7(); }
 }
@@ -323,27 +314,24 @@ const diagnosticEnd10 = diagnostics?.start?.("constance-account.createAuthentica
 try {
 
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return { kind: "auth-required" };
+  const pending = (adapter.state as any).pendingAccountCheckout;
+  if (pending?.version !== 2 || pending?.key !== idempotencyKey || pending?.plan !== planCode || pending?.email !== adapter.state.billingEmail.trim().toLowerCase()) return { kind: "fallback" };
+  await adapter.persist();
   const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkout`,
+    url: `${CONSTANCE_API}/checkouts`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": idempotencyKey,
     },
-    body: JSON.stringify({
-      app_id: adapter.appId,
-      plan_code: planCode,
-      installation_id: adapter.installationId,
-      quantity: 1,
-      coupon_code: null,
-    }),
+    body: JSON.stringify({ app_id: adapter.appId, offer_code: planCode, retry_key: idempotencyKey, return_url: null }),
     throw: false,
   });
   if (response.status === 401 || response.status === 403) return { kind: "auth-required" };
   if (response.status < 200 || response.status >= 300) return { kind: "fallback" };
   const data = response.json?.data;
   const checkoutUrl = typeof data?.checkout_url === "string" ? data.checkout_url : "";
-  return checkoutUrl
+  return data?.app_id === adapter.appId && data?.offer?.code === planCode && data?.checkout_id
     ? { kind: "ok", checkoutUrl, checkoutId: data?.checkout_id ? String(data.checkout_id) : undefined }
     : { kind: "fallback" };
 
@@ -356,11 +344,11 @@ try {
 
   if (!adapter.state.billingAccessToken || !adapter.state.billingAccountLinked) return false;
   const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/checkouts/${encodeURIComponent(checkoutId)}`,
+    url: `${CONSTANCE_API}/checkouts/${encodeURIComponent(checkoutId)}`,
     method: "GET",
     throw: false,
   });
-  return await (response.status >= 200 && response.status < 300 && response.json?.data?.settled === true);
+  return await (response.status >= 200 && response.status < 300 && response.json?.data?.app_id === adapter.appId && response.json?.data?.checkout_id === checkoutId && response.json?.data?.fulfillment_status === "fulfilled");
 
 } catch (diagnosticError11) { diagnostics?.failure?.("constance-account.pollAuthenticatedCheckout", diagnosticError11); throw diagnosticError11; } finally { diagnosticEnd11(); }
 }
@@ -375,7 +363,7 @@ try {
   if (!token || !adapter.state.billingAccountLinked || !adapter.installationId) return false;
   const query = new URLSearchParams({ app_id: adapter.appId, installation_id: adapter.installationId });
   const response = await requestAuthenticatedBilling(adapter.state, adapter.persist, {
-    url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/entitlements/me?${query.toString()}`,
+    url: `${CONSTANCE_API}/billing/entitlements/me?${query.toString()}`,
     method: "GET",
     throw: false,
   });
@@ -397,32 +385,7 @@ export async function claimAccountFreeUsage(
   eventId: string,
   amount: number,
 ): Promise<FreeUsageResult> {
-const diagnosticEnd13 = diagnostics?.start?.("constance-account.claimAccountFreeUsage") ?? (() => {});
-try {
-
-  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
-  try {
-    const response = await requestAuthenticatedBilling(state, persist, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/free-usage/claim`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
-      throw: false,
-    });
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    const remaining = Math.max(0, Number(response.json?.data?.remaining) || 0);
-    new Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} free credits.`);
-    new Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} free credits.`);
-    return { kind: "ok", remaining };
-  } catch (error) {
-diagnostics.failure("constance-account.caught_extra_1", error);
-    diagnostics?.legacy?.("error", "constance-account.constance_account_free_usage_claim_failed");
-    return { kind: "error" };
-  }
-
-} catch (diagnosticError13) { diagnostics?.failure?.("constance-account.claimAccountFreeUsage", diagnosticError13); throw diagnosticError13; } finally { diagnosticEnd13(); }
+  return { kind: "error" };
 }
 
 /** Spend paid credits only after Constance verifies the signed-in account owns this installation. */
@@ -434,34 +397,7 @@ export async function spendAccountCredits(
   eventId: string,
   amount: number,
 ): Promise<AccountSpendResult> {
-const diagnosticEnd14 = diagnostics?.start?.("constance-account.spendAccountCredits") ?? (() => {});
-try {
-
-  if (!state.billingAccessToken || !state.billingAccountLinked) return { kind: "auth-required" };
-  try {
-    const response = await requestAuthenticatedBilling(state, persist, {
-      url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/billing/credits/spend`,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ app_id: appId, installation_id: installationId, event_id: eventId, amount }),
-      throw: false,
-    });
-    if (response.status === 402) return { kind: "insufficient" };
-    if (response.status === 401 || response.status === 403 || response.status === 404) return { kind: "auth-required" };
-    if (response.status < 200 || response.status >= 300) return { kind: "error" };
-    const balance = Number(response.json?.data?.credits?.balance);
-    if (!Number.isFinite(balance)) return { kind: "error" };
-    const remaining = Math.max(0, balance);
-    new Notice(`Credit balance before this task: ${(remaining + amount).toLocaleString()} purchased credits.`);
-    new Notice(`Task used ${amount.toLocaleString()} credits. Balance remaining: ${remaining.toLocaleString()} purchased credits.`);
-    return { kind: "ok", balance: remaining };
-  } catch (error) {
-diagnostics.failure("constance-account.caught_extra_2", error);
-    diagnostics?.legacy?.("error", "constance-account.constance_authenticated_credit_spend_failed");
-    return { kind: "error" };
-  }
-
-} catch (diagnosticError14) { diagnostics?.failure?.("constance-account.spendAccountCredits", diagnosticError14); throw diagnosticError14; } finally { diagnosticEnd14(); }
+  return { kind: "error" };
 }
 
 export function addBillingAccountSettings(containerEl: HTMLElement, adapter: ConstanceAccountAdapter): void {
@@ -473,9 +409,6 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
   renderAccountGuidance(section, { appId: adapter.appId, connected: adapter.state.billingAccountLinked && Boolean(adapter.state.billingAccessToken || adapter.state.billingRefreshToken), defaultAllowance: 2000, unit: "characters", workflow: "Select text or open a Markdown note, then run a Culebra correction command. You can undo the changes." });
   section.createEl("h3", { text: "Account and billing" });
   const state = adapter.state as ConstanceAccountState & Record<string, unknown>;
-  const numericBalances = Object.entries(state)
-    .filter(([key, value]) => /(?:credit|balance|remaining)/i.test(key) && typeof value === "number")
-    .map(([key, value]) => `${key.replace(/^cached/i, "").replace(/^free/i, "Free ").replace(/^purchased/i, "Purchased ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").trim().toLowerCase()}: ${Number(value).toLocaleString()}`);
   const accountStatus = adapter.state.billingAccountLinked
     ? `Signed in as ${adapter.state.billingEmail || "your account"}`
     : state.billingRegistrationPending
@@ -483,7 +416,7 @@ export function addBillingAccountSettings(containerEl: HTMLElement, adapter: Con
       : "Not signed in.";
   section.createEl("p", {
     cls: "constance-account-status",
-    text: numericBalances.length ? `${accountStatus} Balance — ${numericBalances.join("; ")}` : accountStatus,
+    text: accountStatus,
   });
 
   if (!adapter.state.billingAccountLinked) {
@@ -512,7 +445,7 @@ try {
     .addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.maxLength = 256;
-      text.setPlaceholder("8 to 128 characters").onChange((value) => {
+      text.setPlaceholder("12 or more characters for a new account").onChange((value) => {
 return diagnostics.guard("constance-account.control_5", () => {
 const diagnosticAction16 = () => {
  password = value;
@@ -538,6 +471,7 @@ try {
         adapter.refresh?.();
       } catch (error) {
 diagnostics.failure("constance-account.caught_7", error);
+        new Notice(error instanceof Error ? error.message : "Account connection failed. Try again.");
         // Keep the account unlinked and allow the existing Connect action to retry.
         adapter.refresh?.();
       } finally { button.setDisabled(adapter.state.billingAccountLinked || pendingConnections.has(adapter.state)); }
@@ -552,10 +486,11 @@ const diagnosticEnd18 = diagnostics?.start?.("control.account.onClick") ?? (() =
 try {
 
       const refreshToken = adapter.state.billingRefreshToken;
+      const accessToken = adapter.state.billingAccessToken;
       clearBillingSession(adapter.state);
       state.billingRegistrationPending = false;
       await adapter.persist();
-      if (refreshToken) void diagnostics.guard("constance-account.background_9", () => ((diagnostics?.request?.("network.constance-account.addBillingAccountSettings", requestUrl, { url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false }) ?? requestUrl({ url: `${CONSTANCE_ACCOUNT_BASE_URL}/api/v1/auth/logout`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }), throw: false })).catch((rejectedError1) => {
+      if (refreshToken) void diagnostics.guard("constance-account.background_9", () => ((diagnostics?.request?.("network.constance-account.addBillingAccountSettings", requestUrl, { url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false }) ?? requestUrl({ url: `${CONSTANCE_API}/auth/logout`, method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: JSON.stringify({}), throw: false })).catch((rejectedError1) => {
 diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
       new Notice("Signed out.");
       adapter.refresh?.();
@@ -565,11 +500,17 @@ diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
 });
 }));
 
-  if (!adapter.state.billingAccountLinked) new Setting(section).setName("Forgot password?").setDesc("Reset your account password in your browser.")
-    .addButton((button) => button.setButtonText("Open reset page").onClick(() => {
-return diagnostics.guard("constance-account.control_10", () => { const diagnosticAction19 = () => (window.open(`${CONSTANCE_ACCOUNT_BASE_URL}/password-reset`, "_blank")); return diagnostics?.run ? diagnostics.run("control.forgot_password_.onClick", diagnosticAction19) : diagnosticAction19();
-});
-}));
+  if (!adapter.state.billingAccountLinked) {
+    for (const [purpose, name] of [["reset", "Forgot password?"], ["verify", "Resend verification email"]] as const) {
+      new Setting(section).setName(name).addButton(button => button.setButtonText("Send email").onClick(async () => {
+        try {
+          const response = await requestUrl({ url: `${CONSTANCE_API}/auth/recovery`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: adapter.state.billingEmail.trim(), purpose }), throw: false });
+          if (response.status !== 202) throw new Error("Email could not be requested. Try again.");
+          new Notice("If eligible, an email has been queued. Check your inbox and spam.");
+        } catch (error) { diagnostics.failure("constance-account.recovery", error); }
+      }));
+    }
+  }
 
   const firstHeading = containerEl.querySelector(":scope > h1, :scope > h2");
   if (firstHeading?.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
