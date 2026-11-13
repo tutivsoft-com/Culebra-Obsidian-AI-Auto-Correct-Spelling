@@ -20,6 +20,10 @@ import {
 import { addBillingAccountSettings, claimAccountFreeUsage, clearBillingSession, createAuthenticatedCheckout, pollAuthenticatedCheckout, requestAuthenticatedBilling, spendAccountCredits } from "./constance-account";
 import { PluginSupport } from "./plugin-support";
 import { AiRequestQueue } from "./ai-request-queue";
+import type { QueueReporter, QueueResult } from "./ai-request-queue";
+import { CorrectionResultsModal, batchSummary } from "./correction-results";
+import type { CorrectionBatch, CorrectionOutcome } from "./correction-results";
+import { correctionDiff } from "./correction-diff";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "~openai/gpt-luna-latest";
@@ -420,11 +424,20 @@ const DEFAULT_SETTINGS: CulebraSettings = {
  * Coordinates Culebra's one-command correction flow. Optional review is
  * available from settings and is off by default.
  */
+function selectionCorrection(original: string, corrected: string, following: string): string {
+  const next = following.charAt(0);
+  if (/[.!?,;:]/.test(next) && corrected.endsWith(next) && !original.endsWith(next)) {
+    return corrected.slice(0, -1);
+  }
+  return corrected;
+}
+
 export default class CulebraSpellCorrectPlugin extends Plugin {
   refreshBillingCredits?: () => void;
   support!: PluginSupport;
   settings: CulebraSettings = DEFAULT_SETTINGS;
   aiQueue!: AiRequestQueue;
+  private lastBatch: CorrectionBatch | null = null;
   // Cached once resolved so every correction doesn't re-fetch the manifest;
   // cleared and retried on failure in case the key was rotated mid-session.
   private remoteApiKeyCache: string | null = null;
@@ -534,17 +547,14 @@ const diagnosticAction13 = () => {
     });
     this.addCommand({ id: "show-ai-request-queue", name: "Show AI request queue", callback: () => this.aiQueue.open() });
 
+    this.addCommand({ id: "show-note-results", name: "Show note correction results", callback: () => this.showNoteResults() });
+    this.addCommand({ id: "stop-note-corrections", name: "Stop remaining note corrections", callback: () => this.stopRemainingNotes() });
     registerSelectionAction(this, { name: "Culebra: Correct selected notes", icon: "spell-check", accepts: markdownFile, folders: true,
-      run: async files => {
-        new Notice(`Culebra: correcting ${files.length} note(s).`);
-        let failed = 0;
-        for (const file of files) { try { await this.correctFile(file); } catch { failed++; } }
-        new Notice(`Culebra: selection finished; ${failed} failed.`);
-      } });
+      run: files => this.correctSelectedNotes(files.map(file => file.path)) });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
     this.support.showWelcome();
     // Background balance sync; never blocks load, fails silently offline.
-    void diagnostics.guard("main.background_10", () => (syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this))));
+    if (this.settings.billingAccountLinked) void diagnostics.guard("main.background_10", () => (syncPurchasedCreditsFromConstance(this).then(() => retryPendingSpendEvents(this))));
 
 } catch (diagnosticError11) { diagnostics?.failure?.("main.onload", diagnosticError11); throw diagnosticError11; } finally { diagnosticStartupEnd();  diagnostics?.legacy?.("info", "startup.finished"); diagnosticEnd11(); }
 }
@@ -649,186 +659,237 @@ diagnostics.failure("main.caught_13", error);
 } catch (diagnosticError17) { diagnostics?.failure?.("main.chargeOneCredit", diagnosticError17); throw diagnosticError17; } finally { diagnosticEnd17(); }
 }
 
-   /** Correct the current selection, or the whole active note when no text is selected. */
-   private async correctEditorText(editor: Editor) {
-const diagnosticEnd18 = diagnostics?.start?.("main.correctEditorText") ?? (() => {});
-try {
+  private stopRemainingNotes(): void {
+    if (!this.lastBatch?.running || this.lastBatch.stopped) return;
+    this.lastBatch.stopped = true;
+    this.lastBatch.stopReason = "Stopped by you. Remaining notes were left untouched.";
+    new Notice("Culebra: the active correction can finish. Remaining notes will be skipped.");
+  }
 
+  private showNoteResults(): void {
+    const batch = this.lastBatch;
+    if (!batch) { new Notice("Culebra: no selected-note results yet."); return; }
+    new CorrectionResultsModal(this.app, batch, () => this.stopRemainingNotes(), () => {
+      const failed = batch.results.filter(result => result.status === "failed" && result.retryable).map(result => result.path);
+      if (failed.length) void this.correctSelectedNotes(failed);
+    }).open();
+  }
+
+  private async correctSelectedNotes(paths: string[]): Promise<void> {
+    if (this.lastBatch?.running) { new Notice("Culebra: a note run is already in progress. Use Show note correction results."); return; }
+    const batch: CorrectionBatch = { total: paths.length, results: [], running: true, stopped: false, stopReason: "" };
+    this.lastBatch = batch;
+    this.aiQueue.setBatchControls({ summary: () => batchSummary(batch), canStop: () => batch.running && !batch.stopped,
+      stop: () => this.stopRemainingNotes(), showResults: () => this.showNoteResults() });
+    new Notice(`Culebra: correcting ${paths.length} notes. Use the AI request queue for progress or to stop remaining notes.`);
+    try {
+      for (const path of paths) {
+        let result: CorrectionOutcome;
+        if (batch.stopped) result = { status: "skipped", reason: batch.stopReason };
+        else {
+          const file = this.app.vault.getAbstractFileByPath(path);
+          result = file instanceof TFile && markdownFile(file)
+            ? await this.correctFile(file, batch)
+            : { status: "skipped", reason: "The Markdown note is no longer at this path." };
+        }
+        batch.results.push({ path, ...result });
+        if (result.stopBatch) {
+          batch.stopped = true;
+          batch.stopReason = `Stopped after ${path}: ${result.reason}`;
+        }
+      }
+    } finally {
+      batch.running = false;
+      new Notice(`Culebra: ${batchSummary(batch)} Use Show note correction results for paths and reasons.`, 8000);
+    }
+  }
+
+  private queueOutcome(result: QueueResult<CorrectionOutcome>): CorrectionOutcome {
+    if (result.status === "completed") return result.value;
+    if (result.status === "cleared") return { status: "skipped", reason: "Removed from the waiting queue. No request was sent." };
+    return { status: "failed", reason: "The correction could not finish. Check the diagnostic log before retrying.", retryable: false };
+  }
+
+  /** Serialize the request, review, billing and edit as one correction operation. */
+  private async correctEditorText(editor: Editor): Promise<void> {
     const selection = editor.getSelection();
     const hasSelection = selection.trim().length > 0;
     const originalText = hasSelection ? selection : editor.getValue();
     const target = hasSelection ? "selection" : "current note";
-
-    const correctedText = await this.correctText(originalText, target);
-    if (!correctedText) {
-      return;
-    }
-
-    if (correctedText === originalText) {
-      new Notice(`Culebra found no changes in the ${target}.`);
-      return;
-    }
-
-    if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult())) return;
-    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new Notice("Culebra: the note changed during correction. Run the correction again to protect your edits.");
-      return;
-    }
-    if (!(await this.chargeOneCredit(originalText.length))) return;
-    if (hasSelection ? editor.getSelection() !== originalText : editor.getValue() !== originalText) {
-      new Notice("Culebra: the note changed during billing. Your edits were protected; contact support for a credit adjustment.");
-      return;
-    }
-
-    if (hasSelection) {
-      editor.replaceSelection(correctedText);
-    } else {
-      editor.setValue(correctedText);
-    }
-
-    new Notice(`Culebra corrected ${target}. Undo with Ctrl/Cmd+Z if needed.`);
-
-} catch (diagnosticError18) { diagnostics?.failure?.("main.correctEditorText", diagnosticError18); throw diagnosticError18; } finally { diagnosticEnd18(); }
-}
-
-   /** Replace a Markdown file after optional Settings-based before/after review. */
-   private async correctFile(file: TFile) {
-const diagnosticEnd19 = diagnostics?.start?.("main.correctFile") ?? (() => {});
-try {
-
-    const originalText = await this.app.vault.read(file);
-    const correctedText = await this.correctText(originalText, file.name);
-
-    if (!correctedText) {
-      return;
-    }
-
-    if (correctedText === originalText) {
-      new Notice(`Culebra found no changes in ${file.name}.`);
-      return;
-    }
-
-    if (await this.app.vault.read(file) !== originalText) {
-      new Notice(`Culebra: ${file.name} changed during correction. Run the correction again to protect your edits.`);
-      return;
-    }
-    if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult())) return;
-    if (!(await this.chargeOneCredit(originalText.length))) return;
-    if (await this.app.vault.read(file) !== originalText) {
-      new Notice(`Culebra: ${file.name} changed during billing. Your edits were protected; contact support for a credit adjustment.`);
-      return;
-    }
-
-    await this.app.vault.modify(file, correctedText);
-    new Notice(`Culebra corrected ${file.name}.`);
-
-} catch (diagnosticError19) { diagnostics?.failure?.("main.correctFile", diagnosticError19); throw diagnosticError19; } finally { diagnosticEnd19(); }
-}
-
-   /** Ask the configured provider for corrected text without mutating the vault. */
-   private async correctText(originalText: string, targetLabel: string) {
-const diagnosticEnd20 = diagnostics?.start?.("main.correctText") ?? (() => {});
-try {
-
-    if (!originalText.trim()) {
-      new Notice("Culebra found no text to correct.");
-      return null;
-    }
-
-    const queued = await this.aiQueue.enqueue(`Correction for ${targetLabel}`, originalText, async (report) => {
-const diagnosticEnd21 = diagnostics?.start?.("main.background.26150") ?? (() => {});
-try {
-
-      report({ label: "Checking available credits", submittedText: originalText });
-      const cost = Math.max(1, Math.ceil(originalText.length));
-      if (!(await checkBillingBeforeAi(this, cost))) return null;
-
-      let apiKey: string;
+    const matchesOriginal = () => (hasSelection ? editor.getSelection() : editor.getValue()) === originalText;
+    await this.aiQueue.enqueue<CorrectionOutcome>(`Correction for ${target}`, originalText, async report => {
+      let chargeAttempted = false;
       try {
-        report({ label: "Connecting to AI", submittedText: originalText });
-        apiKey = await this.resolveApiKey();
+        if (!matchesOriginal()) return { status: "skipped", reason: "The note or selection changed while waiting. Your edits were protected." };
+        const response = await this.correctText(originalText, report);
+        if (response.status !== "ready") return response;
+        const end = editor.getCursor("to");
+        const correctedText = hasSelection
+          ? selectionCorrection(originalText, response.text, editor.getLine(end.line).slice(end.ch))
+          : response.text;
+        if (this.settings.reviewBeforeApply) report({ label: "Waiting for your review" });
+        if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult())) return { status: "skipped", reason: "Review cancelled. No charge or edit was made." };
+        if (!matchesOriginal()) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
+        report({ label: "Confirming character usage" });
+        chargeAttempted = true;
+        if (!(await this.chargeOneCredit(originalText.length))) return { status: "failed", reason: "Character usage could not be confirmed. No correction was applied. Resolve the account or pending charge before retrying.", stopBatch: true, retryable: false };
+        if (!matchesOriginal()) return { status: "skipped", reason: "The note changed during billing. Your edits were protected. Contact support for a credit adjustment." };
+        if (hasSelection) editor.replaceSelection(correctedText);
+        else editor.setValue(correctedText);
+        return { status: "applied", reason: "Correction applied. Undo with Ctrl/Cmd+Z if needed." };
       } catch (error) {
-diagnostics.failure("main.caught_extra_4", error);
-        diagnostics?.legacy?.("error", "main.culebra_failed_to_resolve_an_openrouter_api_key");
-        new Notice("Culebra AI is temporarily unavailable. Check your connection and try again.");
-        return null;
+        diagnostics.failure("main.correctEditorText", error);
+        return { status: "failed", reason: chargeAttempted ? "Correction failed after billing began. Check your account before retrying." : "Correction failed. Check the diagnostic log and try again.", retryable: !chargeAttempted };
       }
+    }, result => `${result.status}: ${result.reason}`);
+  }
 
+  private async correctFile(file: TFile, batch?: CorrectionBatch): Promise<CorrectionOutcome> {
+    const queued = await this.aiQueue.enqueue<CorrectionOutcome>(`Correction for ${file.path}`, "", async report => {
+      let chargeAttempted = false;
       try {
-        report({ label: "Processing text", submittedText: originalText });
-        const response = await (diagnostics?.request?.("network.main.correctText", requestUrl, {
-          url: OPENROUTER_CHAT_COMPLETIONS_URL,
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: DEFAULT_MODEL,
-            messages: [
-              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
-              { role: "user", content: originalText },
-            ],
-          }),
-          throw: false,
-        }) ?? requestUrl({
-          url: OPENROUTER_CHAT_COMPLETIONS_URL,
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: DEFAULT_MODEL,
-            messages: [
-              { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
-              { role: "user", content: originalText },
-            ],
-          }),
-          throw: false,
-        }));
-
-        if (response.status < 200 || response.status >= 300) {
-          diagnostics?.legacy?.("error", "main.culebra_ai_spell_correct_failed");
-          new Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
-          return null;
-        }
-
-        const correctedText = extractResponseText(response.json);
-        if (!correctedText.trim()) {
-          new Notice("Culebra received an empty response; no changes made.");
-          return null;
-        }
-        return await (correctedText);
+        if (batch?.stopped) return { status: "skipped", reason: batch.stopReason };
+        const originalText = await this.app.vault.read(file);
+        report({ submittedText: originalText });
+        const response = await this.correctText(originalText, report);
+        if (response.status !== "ready") return response;
+        const correctedText = response.text;
+        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
+        if (this.settings.reviewBeforeApply) report({ label: "Waiting for your review" });
+        if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult())) return { status: "skipped", reason: "Review cancelled. No charge or edit was made." };
+        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during review. Your edits were protected." };
+        report({ label: "Confirming character usage" });
+        chargeAttempted = true;
+        if (!(await this.chargeOneCredit(originalText.length))) return { status: "failed", reason: "Character usage could not be confirmed. No correction was applied. Resolve the account or pending charge before retrying.", stopBatch: true, retryable: false };
+        // Vault.process checks and writes atomically, protecting changes made while billing was in flight.
+        let applied = false;
+        await this.app.vault.process(file, current => {
+          if (current !== originalText) return current;
+          applied = true;
+          return correctedText;
+        });
+        return applied ? { status: "applied", reason: "Correction applied." }
+          : { status: "skipped", reason: "The note changed during billing. Your edits were protected. Contact support for a credit adjustment." };
       } catch (error) {
-diagnostics.failure("main.caught_extra_5", error);
-        diagnostics?.legacy?.("error", "main.culebra_ai_spell_correct_failed");
-        new Notice("Culebra could not correct the text. Try again or copy the diagnostic log for support.");
-        return null;
+        diagnostics.failure("main.correctFile", error);
+        return { status: "failed", reason: chargeAttempted ? "Correction failed after billing began. Check your account before retrying." : "The note could not be read or corrected. Check the diagnostic log and try again.", retryable: !chargeAttempted, stopBatch: chargeAttempted };
       }
+    }, result => `${result.status}: ${result.reason}`);
+    return this.queueOutcome(queued);
+  }
 
-} catch (diagnosticError21) { diagnostics?.failure?.("main.background.26150", diagnosticError21); throw diagnosticError21; } finally { diagnosticEnd21(); }
-});
-    return await (queued.status === "completed" ? queued.value : null);
+  /** Return a complete correction or an explicit outcome before any charge or edit. */
+  private async correctText(originalText: string, report: QueueReporter): Promise<{ status: "ready"; text: string } | CorrectionOutcome> {
+    if (!originalText.trim()) return { status: "skipped", reason: "No text to correct." };
+    report({ label: "Checking available credits", submittedText: originalText });
+    const cost = Math.max(1, Math.ceil(originalText.length));
+    try {
+      if (!(await checkBillingBeforeAi(this, cost))) return { status: "failed", reason: "Account or available characters could not be verified. Check account settings. No AI request was sent.", stopBatch: true, retryable: true };
+    } catch (error) {
+      diagnostics.failure("main.checkBillingBeforeAi", error);
+      return { status: "failed", reason: "Account verification failed. No AI request was sent. Check account settings before retrying.", stopBatch: true, retryable: true };
+    }
+    let apiKey: string;
+    try {
+      report({ label: "Connecting to AI" });
+      apiKey = await this.resolveApiKey();
+    } catch (error) {
+      diagnostics.failure("main.resolveApiKey", error);
+      return { status: "failed", reason: "AI is temporarily unavailable. Check your connection and try again.", retryable: true };
+    }
+    try {
+      report({ label: "Processing text" });
+      const response = await (diagnostics?.request?.("network.main.correctText", requestUrl, {
+        url: OPENROUTER_CHAT_COMPLETIONS_URL,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: DEFAULT_MODEL,
+          messages: [
+            { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+            { role: "user", content: originalText },
+          ],
+        }),
+        throw: false,
+      }) ?? requestUrl({
+        url: OPENROUTER_CHAT_COMPLETIONS_URL,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: DEFAULT_MODEL,
+          messages: [
+            { role: "system", content: SPELL_CORRECT_INSTRUCTIONS },
+            { role: "user", content: originalText },
+          ],
+        }),
+        throw: false,
+      }));
 
-} catch (diagnosticError20) { diagnostics?.failure?.("main.correctText", diagnosticError20); throw diagnosticError20; } finally { diagnosticEnd20(); }
-}
+      if (response.status < 200 || response.status >= 300) return { status: "failed", reason: "AI could not correct the text. Try again or copy the diagnostic log for support.", retryable: true };
+      const correctedText = extractResponseText(response.json);
+      if (!correctedText.trim()) return { status: "failed", reason: "AI returned empty text. No charge or changes were made.", retryable: true };
+      if (correctedText === originalText) return { status: "unchanged", reason: "No changes found. No charge was made." };
+      return { status: "ready", text: correctedText };
+    } catch (error) {
+      if (error instanceof IncompleteCorrectionError) return { status: "failed", reason: error.message, retryable: true };
+      diagnostics.failure("main.correctText", error);
+      return { status: "failed", reason: "AI could not correct the text. Check your connection and try again.", retryable: true };
+    }
+  }
 }
 
 class CorrectionReviewModal extends Modal {
   private resolveResult!: (approved: boolean) => void;
   private settled = false;
   constructor(app: CulebraSpellCorrectPlugin["app"], private target: string, private before: string, private after: string) { super(app); }
-  waitForResult(): Promise<boolean> { this.open(); return new Promise((resolve) => { this.resolveResult = resolve; }); }
+  waitForResult(): Promise<boolean> { return new Promise((resolve) => { this.resolveResult = resolve; this.open(); }); }
   onOpen() {
 return diagnostics.guard("main.onOpen_14", () => {
 const diagnosticAction22 = () => {
 
     this.contentEl.createEl("h2", { text: `Review correction: ${this.target}` });
-    const diff = this.contentEl.createEl("pre", { text: `BEFORE\n${this.before}\n\nAFTER\n${this.after}` });
-    diff.style.whiteSpace = "pre-wrap";
-    diff.style.maxHeight = "55vh";
-    diff.style.overflow = "auto";
+    const parts = correctionDiff(this.before, this.after);
+    const changes: HTMLElement[] = [];
+    const summary = this.contentEl.createEl("p", { attr: { "aria-live": "polite" } });
+    this.contentEl.createEl("p", { text: "Removed text is struck through. Added text is underlined. Whitespace changes are highlighted too." });
+    const navigation = this.contentEl.createDiv();
+    const previous = navigation.createEl("button", { text: "Previous change" });
+    const next = navigation.createEl("button", { text: "Next change" });
+    const comparison = this.contentEl.createEl("pre", { cls: "culebra-review-comparison" });
+    let passage: HTMLElement | null = null;
+    for (const part of parts) {
+      if (part.kind === "same") {
+        comparison.createSpan({ text: part.text });
+        passage = null;
+      } else {
+        if (!passage) {
+          passage = comparison.createSpan({ cls: "culebra-review-change", attr: { tabindex: "-1", "aria-label": `Changed passage ${changes.length + 1}` } });
+          changes.push(passage);
+        }
+        passage.createEl(part.kind === "removed" ? "del" : "ins", { text: part.text });
+      }
+    }
+    let index = -1;
+    const navigate = (direction: number): void => {
+      if (!changes.length) return;
+      changes[index]?.removeClass("is-current");
+      index = index < 0 ? (direction < 0 ? changes.length - 1 : 0) : (index + direction + changes.length) % changes.length;
+      const change = changes[index];
+      change.addClass("is-current");
+      change.scrollIntoView({ block: "center", inline: "nearest" });
+      change.focus({ preventScroll: true });
+      summary.setText(`${changes.length} changed passages. Change ${index + 1} of ${changes.length}.`);
+    };
+    summary.setText(`${changes.length} changed passages.`);
+    previous.disabled = next.disabled = changes.length === 0;
+    previous.onclick = diagnostics.wrap("main.review.previous", () => navigate(-1));
+    next.onclick = diagnostics.wrap("main.review.next", () => navigate(1));
     const actions = this.contentEl.createDiv();
     actions.createEl("button", { text: "Cancel" }).onclick = diagnostics.wrap("main.dom_1", () => this.finish(false));
     actions.createEl("button", { text: "Apply correction", cls: "mod-cta" }).onclick = diagnostics.wrap("main.dom_2", () => this.finish(true));
@@ -848,23 +909,27 @@ const diagnosticAction23 = () => {
 }
 }
 
-function extractResponseText(responseJson: unknown): string {
-  if (!responseJson || typeof responseJson !== "object") {
-    return "";
-  }
+class IncompleteCorrectionError extends Error {}
 
-  // OpenRouter's response shape is OpenAI-compatible chat completions:
-  // { choices: [{ message: { content: "..." } }] }.
+function extractResponseText(responseJson: unknown): string {
+  const fail = () => new IncompleteCorrectionError("AI returned an incomplete or unverified correction. The original and credits were kept. Try a smaller selection.");
+  if (!responseJson || typeof responseJson !== "object") throw fail();
   const response = responseJson as {
+    error?: unknown;
     choices?: Array<{
-      message?: {
-        content?: unknown;
-      };
+      finish_reason?: unknown;
+      error?: unknown;
+      message?: { content?: unknown; refusal?: unknown; tool_calls?: unknown; function_call?: unknown };
     }>;
   };
-
-  const content = response.choices?.[0]?.message?.content;
-  return typeof content === "string" ? content : "";
+  const choice = Array.isArray(response.choices) ? response.choices[0] : undefined;
+  const tools = choice?.message?.tool_calls;
+  const hasTools = Array.isArray(tools) ? tools.length > 0 : Boolean(tools);
+  if (response.error || !choice || choice.error || choice.finish_reason !== "stop"
+    || choice.message?.refusal || hasTools || choice.message?.function_call) throw fail();
+  const content = choice.message?.content;
+  if (typeof content !== "string") throw fail();
+  return content;
 }
 
 class CulebraSettingTab extends PluginSettingTab {

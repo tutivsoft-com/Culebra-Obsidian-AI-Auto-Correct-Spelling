@@ -107,3 +107,36 @@
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
 }
+
+/* Word review uses text nodes so note markup stays inert. */
+.culebra-review-comparison {
+  max-height: 55vh;
+  overflow: auto;
+  padding: var(--size-4-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--background-secondary);
+}
+.culebra-review-comparison del {
+  color: var(--text-normal);
+  background: var(--background-modifier-error);
+  text-decoration: line-through;
+}
+.culebra-review-comparison ins {
+  color: var(--text-normal);
+  background: var(--background-modifier-success);
+  text-decoration: underline;
+}
+.culebra-review-change.is-current {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+.culebra-batch-results {
+  max-height: 50vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.culebra-batch-results > div {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-2) 0;
+}

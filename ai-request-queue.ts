@@ -9,6 +9,12 @@ export interface AiQueueUpdate {
 }
 
 export type QueueReporter = (update: AiQueueUpdate) => void;
+interface BatchControls {
+  summary: () => string;
+  canStop: () => boolean;
+  stop: () => void;
+  showResults: () => void;
+}
 interface QueueJob<T = unknown> {
   id: number;
   label: string;
@@ -20,6 +26,7 @@ interface QueueJob<T = unknown> {
   total?: number;
   run: (report: QueueReporter) => Promise<T>;
   resolve: (result: QueueResult<T>) => void;
+  describe?: (value: T) => string;
 }
 export type QueueResult<T> = { status: "completed"; value: T } | { status: "cleared" } | { status: "failed"; error: unknown };
 
@@ -32,6 +39,12 @@ export class AiRequestQueue extends Modal {
   private nextId = 1;
   private timer: number | null = null;
   private lastCompletion = "";
+  private batchControls: BatchControls | null = null;
+
+  setBatchControls(controls: BatchControls | null): void {
+    this.batchControls = controls;
+    this.render();
+  }
 
   constructor(app: App, private readonly appName: string, private readonly shouldAutoOpen: () => boolean = () => false) { super(app); }
 
@@ -62,13 +75,13 @@ const diagnosticAction2 = () => {
 });
 }
 
-  enqueue<T>(label: string, submittedText: string, run: (report: QueueReporter) => Promise<T>): Promise<QueueResult<T>> {
+  enqueue<T>(label: string, submittedText: string, run: (report: QueueReporter) => Promise<T>, describe?: (value: T) => string): Promise<QueueResult<T>> {
 const diagnosticAction3 = () => {
 
     return new Promise<QueueResult<T>>((resolve) => {
       const job: QueueJob<T> = {
         id: this.nextId++, label, submittedText, queuedAt: Date.now(), statusLabel: "Waiting",
-        run, resolve,
+        run, resolve, describe,
       };
       this.pending.push(job);
       if (!this.opened && this.shouldAutoOpen()) this.open();
@@ -109,7 +122,7 @@ try {
         try {
           const value = await job.run(report);
           const elapsed = Math.max(0, Math.floor((Date.now() - job.startedAt) / 1000));
-          this.lastCompletion = `${job.label} completed in ${elapsed} second${elapsed === 1 ? "" : "s"}.`;
+          this.lastCompletion = `${job.label}: ${job.describe ? job.describe(value) : "request finished"} (${elapsed} second${elapsed === 1 ? "" : "s"}).`;
           new Notice(`${this.appName}: ${this.lastCompletion}`, 4000);
           job.resolve({ status: "completed", value });
         } catch (error) {
@@ -148,6 +161,13 @@ const diagnosticAction5 = () => {
     const root = this.contentEl;
     root.empty();
     root.createEl("h2", { text: `${this.appName} AI request queue` });
+    if (this.batchControls) {
+      const batch = root.createDiv();
+      batch.createEl("h3", { text: "Selected notes" });
+      batch.createEl("p", { text: this.batchControls.summary() });
+      new ButtonComponent(batch).setButtonText("Stop remaining notes").setDisabled(!this.batchControls.canStop()).onClick(() => { this.batchControls?.stop(); this.render(); });
+      new ButtonComponent(batch).setButtonText("Show note results").onClick(() => this.batchControls?.showResults());
+    }
     if (this.active) {
       const elapsed = Math.max(0, Math.floor((Date.now() - (this.active.startedAt ?? Date.now())) / 1000));
       const active = root.createDiv();
