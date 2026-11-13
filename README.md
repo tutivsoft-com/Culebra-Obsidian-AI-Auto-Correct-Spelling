@@ -24,7 +24,7 @@ Uncertain older billing records are retained and are never replayed as new v2 ch
 
 Version 4.4.100: Corrections validate complete responses, report accurate outcomes and support batch Stop, retry and highlighted review.
 
-Use the matching GitHub release for installation availability. Community directory review is separate from source validation.
+Obsidian Community release **4.4.100** requires Obsidian **1.5.0** or later. [GitHub release](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases/tag/4.4.100).
 
 ## Support
 
