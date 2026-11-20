@@ -25,3 +25,7 @@ Uncertain older billing records are retained and are never replayed as new v2 ch
 Keep queued corrections bound to their original note and selection. Skip unchanged corrections.
 
 Requires Obsidian 1.5.0 or later. [GitHub releases](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases).
+
+## Support
+
+Use the plugin's Help or Open documentation command and the support links in its manifest. For a billing problem, retain the original purchase or operation identity and use the account portal. Do not share passwords or session tokens.
