@@ -492,7 +492,7 @@ diagnosticStartupEnd = diagnostics?.start?.("startup.initialize") ?? (() => {});
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor: Editor) => {
 return diagnostics.guard("main.event_4", () => {
-        const hasSelection = editor.getSelection().trim().length > 0;
+        const hasSelection = editor.getSelection().length > 0;
         menu.addItem((item) => {
           item
             .setTitle(hasSelection ? "Culebra: Correct selected text" : "Culebra: Correct current note")
@@ -712,21 +712,36 @@ diagnostics.failure("main.caught_13", error);
 
   /** Serialize the request, review, billing and edit as one correction operation. */
   private async correctEditorText(editor: Editor): Promise<void> {
+    const active = this.app.workspace.activeEditor;
+    if (!active?.file || active.editor !== editor) return;
+    const file = active.file;
+    const filePath = file.path;
+    const content = editor.getValue();
     const selection = editor.getSelection();
-    const hasSelection = selection.trim().length > 0;
-    const originalText = hasSelection ? selection : editor.getValue();
+    const hasSelection = selection.length > 0;
+    const range = { from: editor.getCursor("from"), to: editor.getCursor("to") };
+    const originalText = hasSelection ? selection : content;
     const target = hasSelection ? "selection" : "current note";
-    const matchesOriginal = () => (hasSelection ? editor.getSelection() : editor.getValue()) === originalText;
+    const matchesOriginal = () => {
+      const current = this.app.workspace.activeEditor;
+      if (current?.file !== file || current.editor !== editor || file.path !== filePath || editor.getValue() !== content) return false;
+      const from = editor.getCursor("from");
+      const to = editor.getCursor("to");
+      return from.line === range.from.line && from.ch === range.from.ch
+        && to.line === range.to.line && to.ch === range.to.ch
+        && editor.getSelection() === selection;
+    };
     await this.aiQueue.enqueue<CorrectionOutcome>(`Correction for ${target}`, originalText, async report => {
       let chargeAttempted = false;
       try {
         if (!matchesOriginal()) return { status: "skipped", reason: "The note or selection changed while waiting. Your edits were protected." };
         const response = await this.correctText(originalText, report);
         if (response.status !== "ready") return response;
-        const end = editor.getCursor("to");
+        if (!matchesOriginal()) return { status: "skipped", reason: "The note or selection changed during correction. Your edits were protected." };
         const correctedText = hasSelection
-          ? selectionCorrection(originalText, response.text, editor.getLine(end.line).slice(end.ch))
+          ? selectionCorrection(originalText, response.text, editor.getLine(range.to.line).slice(range.to.ch))
           : response.text;
+        if (correctedText === originalText) return { status: "unchanged", reason: "No changes found. No charge was made." };
         if (this.settings.reviewBeforeApply) report({ label: "Waiting for your review" });
         if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, target, originalText, correctedText).waitForResult())) return { status: "skipped", reason: "Review cancelled. No charge or edit was made." };
         if (!matchesOriginal()) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
@@ -734,7 +749,7 @@ diagnostics.failure("main.caught_13", error);
         chargeAttempted = true;
         if (!(await this.chargeOneCredit(originalText.length))) return { status: "failed", reason: "Character usage could not be confirmed. No correction was applied. Resolve the account or pending charge before retrying.", stopBatch: true, retryable: false };
         if (!matchesOriginal()) return { status: "skipped", reason: "The note changed during billing. Your edits were protected. Contact support for a credit adjustment." };
-        if (hasSelection) editor.replaceSelection(correctedText);
+        if (hasSelection) editor.replaceRange(correctedText, range.from, range.to);
         else editor.setValue(correctedText);
         return { status: "applied", reason: "Correction applied. Undo with Ctrl/Cmd+Z if needed." };
       } catch (error) {
