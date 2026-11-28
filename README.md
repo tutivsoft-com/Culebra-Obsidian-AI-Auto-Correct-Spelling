@@ -4,7 +4,7 @@ Correct spelling, grammar and punctuation in selected text or Markdown notes.
 
 ## Use
 
-Install or update the plugin through Obsidian Community plugins, enable it, and open its settings. In an editable Markdown note, run **Correct selection or current note** from the command palette. Select text to correct that selection, or leave the selection empty to correct the whole note. To correct multiple Markdown files, select them in the file explorer and choose **Culebra: Correct selected notes** from the context menu. Turn on **Review before applying** in settings to review proposed changes first. Existing preferences and local recovery records are retained when you update.
+Install or update the plugin through Obsidian Community plugins, enable it, and open its settings. Use the existing plugin commands for the selected note, text or files. Existing preferences and local recovery records are retained.
 
 ## Account and billing
 
@@ -24,8 +24,8 @@ Uncertain older billing records are retained and are never replayed as new v2 ch
 
 Keep queued corrections bound to their original note and selection. Skip unchanged corrections.
 
-Requires Obsidian 1.5.0 or later. [GitHub release 4.4.102](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases/tag/4.4.102).
+Requires Obsidian 1.5.0 or later. [GitHub releases](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases).
 
 ## Support
 
-In plugin settings, choose **Open Help**, or run **Open documentation** from the command palette. For a billing problem, keep the original purchase or operation ID and sign in to the account portal with the same account. Do not share passwords or session tokens. [Constance account portal](https://app.tutivsoft.com/).
+Use the plugin's Help or Open documentation command and the support links in its manifest. For a billing problem, retain the original purchase or operation identity and use the account portal. Do not share passwords or session tokens.

@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal } from "obsidian";
+import { App, ButtonComponent, Modal, type TFile } from "obsidian";
 
 export interface CorrectionOutcome {
   status: "applied" | "unchanged" | "skipped" | "failed";
@@ -7,9 +7,12 @@ export interface CorrectionOutcome {
   retryable?: boolean;
 }
 
-export interface NoteResult extends CorrectionOutcome {
+export interface NoteTarget {
+  file: TFile;
   path: string;
 }
+
+export interface NoteResult extends CorrectionOutcome, NoteTarget {}
 
 export interface CorrectionBatch {
   total: number;

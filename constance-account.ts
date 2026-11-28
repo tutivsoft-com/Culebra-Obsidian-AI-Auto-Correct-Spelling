@@ -503,7 +503,10 @@ diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
           const response = await requestUrl({ url: `${CONSTANCE_API}/auth/recovery`, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: adapter.state.billingEmail.trim(), purpose }), throw: false });
           if (response.status !== 202) throw new Error("Email could not be requested. Try again.");
           new Notice("If eligible, an email has been queued. Check your inbox and spam.");
-        } catch (error) { diagnostics.failure("constance-account.recovery", error); }
+        } catch (error) {
+          diagnostics.failure("constance-account.recovery", error);
+          new Notice("Email could not be requested. Try again.");
+        }
       }));
     }
   }
@@ -512,6 +515,7 @@ diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
   if (firstHeading?.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
   else containerEl.prepend(section);
   queueMicrotask(() => {
+    if (!containerEl.contains(section)) return;
     const candidates = Array.from(containerEl.querySelectorAll(":scope > .setting-item"));
     for (const item of candidates) {
       const label = item.textContent || "";
@@ -520,8 +524,8 @@ diagnostics.failure("constance-account.rejected_2", rejectedError1);})));
     for (const summary of Array.from(containerEl.querySelectorAll('[class*="credit"][class*="summary"], [class*="balance"][class*="summary"]'))) {
       if (!section.contains(summary)) section.appendChild(summary);
     }
+    applySettingsLayout(containerEl, adapter.appId, adapter.appVersion);
   });
-  queueMicrotask(() => applySettingsLayout(containerEl, adapter.appId, adapter.appVersion));
 }
 
 /** A single welcome with an actionable setup link; account guidance stays in settings until connected. */

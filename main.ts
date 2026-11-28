@@ -1,6 +1,6 @@
 import { CONSTANCE_API, accountBalance } from "./constance-v2";
 import { initializeMatomo } from "./matomo-plugin";
-import { selectedFiles, markdownFile, registerSelectionAction } from "./selection-scope";
+import { markdownFile, registerSelectionAction } from "./selection-scope";
 import { diagnostics } from "./diagnostics";
 import { consumeAccountUnits } from "./account-credit-client";
 import { showAccountWelcome } from "./constance-account";
@@ -22,7 +22,7 @@ import { PluginSupport } from "./plugin-support";
 import { AiRequestQueue } from "./ai-request-queue";
 import type { QueueReporter, QueueResult } from "./ai-request-queue";
 import { CorrectionResultsModal, batchSummary } from "./correction-results";
-import type { CorrectionBatch, CorrectionOutcome } from "./correction-results";
+import type { CorrectionBatch, CorrectionOutcome, NoteTarget } from "./correction-results";
 import { correctionDiff } from "./correction-diff";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -463,7 +463,13 @@ let diagnosticStartupEnd: () => void = () => {};
 const diagnosticEnd11 = diagnostics?.start?.("main.onload") ?? (() => {});
 try {
 
-    this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct spelling, grammar, and punctuation in selected text or a note.", quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."] });
+    this.support = new PluginSupport(this, {
+      name: "Culebra AI Spell Correct",
+      summary: "Correct spelling, grammar, and punctuation in selected text or a note.",
+      quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command. Obsidian's Undo can restore the original text."],
+      commands: ["Correct selection or current note", "Show AI request queue", "Show note correction results", "Stop remaining note corrections"],
+      troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."],
+    });
     this.support.start();
     await this.loadSettings();
 diagnosticStartupEnd = diagnostics?.start?.("startup.initialize") ?? (() => {});
@@ -516,10 +522,11 @@ const diagnosticAction12 = () => {
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
 return diagnostics.guard("main.event_7", () => {
-        if (!(file instanceof TFile) || file.extension !== "md") {
+        if (!(file instanceof TFile) || !markdownFile(file)) {
           return;
         }
 
+        const target = { file, path: file.path };
         menu.addItem((item) => {
           item
             .setTitle("Culebra: Correct this Markdown file")
@@ -528,7 +535,7 @@ return diagnostics.guard("main.event_7", () => {
 return diagnostics.guard("main.control_8", () => {
 const diagnosticAction13 = () => {
 
-              void diagnostics.guard("main.background_9", () => (this.correctFile(file)));
+              void diagnostics.guard("main.background_9", () => (this.correctFile(target)));
 
 }; return diagnostics?.run ? diagnostics.run("control.18843.onClick", diagnosticAction13) : diagnosticAction13();
 
@@ -550,7 +557,7 @@ const diagnosticAction13 = () => {
     this.addCommand({ id: "show-note-results", name: "Show note correction results", callback: () => this.showNoteResults() });
     this.addCommand({ id: "stop-note-corrections", name: "Stop remaining note corrections", callback: () => this.stopRemainingNotes() });
     registerSelectionAction(this, { name: "Culebra: Correct selected notes", icon: "spell-check", accepts: markdownFile, folders: true,
-      run: files => this.correctSelectedNotes(files.map(file => file.path)) });
+      run: files => this.correctSelectedNotes(files.map(file => ({ file, path: file.path }))) });
     this.addSettingTab(new CulebraSettingTab(this.app, this));
     this.support.showWelcome();
     // Background balance sync; never blocks load, fails silently offline.
@@ -670,32 +677,27 @@ diagnostics.failure("main.caught_13", error);
     const batch = this.lastBatch;
     if (!batch) { new Notice("Culebra: no selected-note results yet."); return; }
     new CorrectionResultsModal(this.app, batch, () => this.stopRemainingNotes(), () => {
-      const failed = batch.results.filter(result => result.status === "failed" && result.retryable).map(result => result.path);
+      const failed = batch.results.filter(result => result.status === "failed" && result.retryable);
       if (failed.length) void this.correctSelectedNotes(failed);
     }).open();
   }
 
-  private async correctSelectedNotes(paths: string[]): Promise<void> {
+  private async correctSelectedNotes(targets: NoteTarget[]): Promise<void> {
     if (this.lastBatch?.running) { new Notice("Culebra: a note run is already in progress. Use Show note correction results."); return; }
-    const batch: CorrectionBatch = { total: paths.length, results: [], running: true, stopped: false, stopReason: "" };
+    const batch: CorrectionBatch = { total: targets.length, results: [], running: true, stopped: false, stopReason: "" };
     this.lastBatch = batch;
     this.aiQueue.setBatchControls({ summary: () => batchSummary(batch), canStop: () => batch.running && !batch.stopped,
       stop: () => this.stopRemainingNotes(), showResults: () => this.showNoteResults() });
-    new Notice(`Culebra: correcting ${paths.length} notes. Use the AI request queue for progress or to stop remaining notes.`);
+    new Notice(`Culebra: correcting ${targets.length} notes. Use the AI request queue for progress or to stop remaining notes.`);
     try {
-      for (const path of paths) {
-        let result: CorrectionOutcome;
-        if (batch.stopped) result = { status: "skipped", reason: batch.stopReason };
-        else {
-          const file = this.app.vault.getAbstractFileByPath(path);
-          result = file instanceof TFile && markdownFile(file)
-            ? await this.correctFile(file, batch)
-            : { status: "skipped", reason: "The Markdown note is no longer at this path." };
-        }
-        batch.results.push({ path, ...result });
+      for (const target of targets) {
+        const result: CorrectionOutcome = batch.stopped
+          ? { status: "skipped", reason: batch.stopReason }
+          : await this.correctFile(target, batch);
+        batch.results.push({ file: target.file, path: target.path, ...result });
         if (result.stopBatch) {
           batch.stopped = true;
-          batch.stopReason = `Stopped after ${path}: ${result.reason}`;
+          batch.stopReason = `Stopped after ${target.path}: ${result.reason}`;
         }
       }
     } finally {
@@ -725,6 +727,7 @@ diagnostics.failure("main.caught_13", error);
     const matchesOriginal = () => {
       const current = this.app.workspace.activeEditor;
       if (current?.file !== file || current.editor !== editor || file.path !== filePath || editor.getValue() !== content) return false;
+      if (!hasSelection) return true;
       const from = editor.getCursor("from");
       const to = editor.getCursor("to");
       return from.line === range.from.line && from.ch === range.from.ch
@@ -759,30 +762,37 @@ diagnostics.failure("main.caught_13", error);
     }, result => `${result.status}: ${result.reason}`);
   }
 
-  private async correctFile(file: TFile, batch?: CorrectionBatch): Promise<CorrectionOutcome> {
-    const queued = await this.aiQueue.enqueue<CorrectionOutcome>(`Correction for ${file.path}`, "", async report => {
+  private async correctFile({ file, path }: NoteTarget, batch?: CorrectionBatch): Promise<CorrectionOutcome> {
+    const matchesTarget = () => file.path === path && this.app.vault.getAbstractFileByPath(path) === file;
+    const targetChanged: CorrectionOutcome = { status: "skipped", reason: "The original Markdown note is no longer at this path." };
+    const matchesOriginal = async (text: string) => matchesTarget() && await this.app.vault.read(file) === text && matchesTarget();
+    const queued = await this.aiQueue.enqueue<CorrectionOutcome>(`Correction for ${path}`, "", async report => {
       let chargeAttempted = false;
       try {
         if (batch?.stopped) return { status: "skipped", reason: batch.stopReason };
+        if (!matchesTarget()) return targetChanged;
         const originalText = await this.app.vault.read(file);
+        if (!matchesTarget()) return targetChanged;
         report({ submittedText: originalText });
         const response = await this.correctText(originalText, report);
         if (response.status !== "ready") return response;
         const correctedText = response.text;
-        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
+        if (!(await matchesOriginal(originalText))) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
         if (this.settings.reviewBeforeApply) report({ label: "Waiting for your review" });
         if (this.settings.reviewBeforeApply && !(await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult())) return { status: "skipped", reason: "Review cancelled. No charge or edit was made." };
-        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during review. Your edits were protected." };
+        if (!(await matchesOriginal(originalText))) return { status: "skipped", reason: "The note changed during review. Your edits were protected." };
         report({ label: "Confirming character usage" });
         chargeAttempted = true;
         if (!(await this.chargeOneCredit(originalText.length))) return { status: "failed", reason: "Character usage could not be confirmed. No correction was applied. Resolve the account or pending charge before retrying.", stopBatch: true, retryable: false };
         // Vault.process checks and writes atomically, protecting changes made while billing was in flight.
         let applied = false;
-        await this.app.vault.process(file, current => {
-          if (current !== originalText) return current;
-          applied = true;
-          return correctedText;
-        });
+        if (matchesTarget()) {
+          await this.app.vault.process(file, current => {
+            if (!matchesTarget() || current !== originalText) return current;
+            applied = true;
+            return correctedText;
+          });
+        }
         return applied ? { status: "applied", reason: "Correction applied." }
           : { status: "skipped", reason: "The note changed during billing. Your edits were protected. Contact support for a credit adjustment." };
       } catch (error) {

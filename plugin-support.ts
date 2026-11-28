@@ -70,7 +70,7 @@ return diagnostics.guard("plugin-support.onOpen_1", () => {
     ["Open Account to sign in or create an account. Verify your email if prompted.", "Select text in an editable Markdown note. With no selection, the current note is corrected.", "Review the result. Use Undo or the available recovery options if needed."].forEach(text => steps.createEl("li", { text }));
     const settings = () => { const target = (this.app as any).setting; target?.open(); target?.openTabById(this.plugin?.manifest.id); this.close(); };
     new Setting(this.contentEl).addButton(button => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings)))
-      .addButton(button => button.setButtonText("Correct selected text").onClick(() => {
+      .addButton(button => button.setButtonText("Correct selection or current note").onClick(() => {
 return diagnostics.guard("plugin-support.control_3", () => {
         const commands = (this.app as any).commands;
         const id = this.plugin?.manifest.id + ":" + "spell-correct";

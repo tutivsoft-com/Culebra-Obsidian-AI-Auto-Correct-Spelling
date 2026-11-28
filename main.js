@@ -1525,6 +1525,7 @@ function addBillingAccountSettings(containerEl, adapter) {
           new import_obsidian7.Notice("If eligible, an email has been queued. Check your inbox and spam.");
         } catch (error) {
           diagnostics.failure("constance-account.recovery", error);
+          new import_obsidian7.Notice("Email could not be requested. Try again.");
         }
       }));
     }
@@ -1533,6 +1534,7 @@ function addBillingAccountSettings(containerEl, adapter) {
   if (firstHeading == null ? void 0 : firstHeading.nextSibling) containerEl.insertBefore(section, firstHeading.nextSibling);
   else containerEl.prepend(section);
   queueMicrotask(() => {
+    if (!containerEl.contains(section)) return;
     const candidates = Array.from(containerEl.querySelectorAll(":scope > .setting-item"));
     for (const item of candidates) {
       const label2 = item.textContent || "";
@@ -1541,8 +1543,8 @@ function addBillingAccountSettings(containerEl, adapter) {
     for (const summary of Array.from(containerEl.querySelectorAll('[class*="credit"][class*="summary"], [class*="balance"][class*="summary"]'))) {
       if (!section.contains(summary)) section.appendChild(summary);
     }
+    applySettingsLayout(containerEl, adapter.appId, adapter.appVersion);
   });
-  queueMicrotask(() => applySettingsLayout(containerEl, adapter.appId, adapter.appVersion));
 }
 async function showAccountWelcome(plugin, state, persist) {
   var _a, _b, _c, _d, _e;
@@ -1711,7 +1713,7 @@ var DocumentationModal = class extends import_obsidian9.Modal {
         target == null ? void 0 : target.openTabById((_a = this.plugin) == null ? void 0 : _a.manifest.id);
         this.close();
       };
-      new import_obsidian9.Setting(this.contentEl).addButton((button) => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings))).addButton((button) => button.setButtonText("Correct selected text").onClick(() => {
+      new import_obsidian9.Setting(this.contentEl).addButton((button) => button.setButtonText("Open account").setCta().onClick(diagnostics.wrap("plugin-support.control_2", settings))).addButton((button) => button.setButtonText("Correct selection or current note").onClick(() => {
         return diagnostics.guard("plugin-support.control_3", () => {
           var _a, _b;
           const commands = this.app.commands;
@@ -2740,7 +2742,13 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
     const diagnosticEnd11 = (_c = (_b = (_a = diagnostics) == null ? void 0 : _a.start) == null ? void 0 : _b.call(_a, "main.onload")) != null ? _c : (() => {
     });
     try {
-      this.support = new PluginSupport(this, { name: "Culebra AI Spell Correct", summary: "Correct spelling, grammar, and punctuation in selected text or a note.", quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command; edits apply automatically and can be undone."], commands: ["Correct selected text", "Correct current note", "Undo last correction"], troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."] });
+      this.support = new PluginSupport(this, {
+        name: "Culebra AI Spell Correct",
+        summary: "Correct spelling, grammar, and punctuation in selected text or a note.",
+        quickStart: ["Sign in to your account in Settings.", "Select text or open a Markdown note.", "Run a Culebra correction command. Obsidian's Undo can restore the original text."],
+        commands: ["Correct selection or current note", "Show AI request queue", "Show note correction results", "Stop remaining note corrections"],
+        troubleshooting: ["Use Copy diagnostic log before reporting a problem.", "Check that the note is editable and your account is connected."]
+      });
       this.support.start();
       await this.loadSettings();
       diagnosticStartupEnd = (_f = (_e = (_d = diagnostics) == null ? void 0 : _d.start) == null ? void 0 : _e.call(_d, "startup.initialize")) != null ? _f : (() => {
@@ -2782,15 +2790,16 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
       this.registerEvent(
         this.app.workspace.on("file-menu", (menu, file) => {
           return diagnostics.guard("main.event_7", () => {
-            if (!(file instanceof import_obsidian12.TFile) || file.extension !== "md") {
+            if (!(file instanceof import_obsidian12.TFile) || !markdownFile(file)) {
               return;
             }
+            const target = { file, path: file.path };
             menu.addItem((item) => {
               item.setTitle("Culebra: Correct this Markdown file").setIcon("spell-check").onClick(() => {
                 return diagnostics.guard("main.control_8", () => {
                   var _a2;
                   const diagnosticAction13 = () => {
-                    void diagnostics.guard("main.background_9", () => this.correctFile(file));
+                    void diagnostics.guard("main.background_9", () => this.correctFile(target));
                   };
                   return ((_a2 = diagnostics) == null ? void 0 : _a2.run) ? diagnostics.run("control.18843.onClick", diagnosticAction13) : diagnosticAction13();
                 });
@@ -2812,7 +2821,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
         icon: "spell-check",
         accepts: markdownFile,
         folders: true,
-        run: (files) => this.correctSelectedNotes(files.map((file) => file.path))
+        run: (files) => this.correctSelectedNotes(files.map((file) => ({ file, path: file.path })))
       });
       this.addSettingTab(new CulebraSettingTab(this.app, this));
       this.support.showWelcome();
@@ -2952,17 +2961,17 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
       return;
     }
     new CorrectionResultsModal(this.app, batch, () => this.stopRemainingNotes(), () => {
-      const failed = batch.results.filter((result) => result.status === "failed" && result.retryable).map((result) => result.path);
+      const failed = batch.results.filter((result) => result.status === "failed" && result.retryable);
       if (failed.length) void this.correctSelectedNotes(failed);
     }).open();
   }
-  async correctSelectedNotes(paths) {
+  async correctSelectedNotes(targets) {
     var _a;
     if ((_a = this.lastBatch) == null ? void 0 : _a.running) {
       new import_obsidian12.Notice("Culebra: a note run is already in progress. Use Show note correction results.");
       return;
     }
-    const batch = { total: paths.length, results: [], running: true, stopped: false, stopReason: "" };
+    const batch = { total: targets.length, results: [], running: true, stopped: false, stopReason: "" };
     this.lastBatch = batch;
     this.aiQueue.setBatchControls({
       summary: () => batchSummary(batch),
@@ -2970,19 +2979,14 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
       stop: () => this.stopRemainingNotes(),
       showResults: () => this.showNoteResults()
     });
-    new import_obsidian12.Notice(`Culebra: correcting ${paths.length} notes. Use the AI request queue for progress or to stop remaining notes.`);
+    new import_obsidian12.Notice(`Culebra: correcting ${targets.length} notes. Use the AI request queue for progress or to stop remaining notes.`);
     try {
-      for (const path of paths) {
-        let result;
-        if (batch.stopped) result = { status: "skipped", reason: batch.stopReason };
-        else {
-          const file = this.app.vault.getAbstractFileByPath(path);
-          result = file instanceof import_obsidian12.TFile && markdownFile(file) ? await this.correctFile(file, batch) : { status: "skipped", reason: "The Markdown note is no longer at this path." };
-        }
-        batch.results.push({ path, ...result });
+      for (const target of targets) {
+        const result = batch.stopped ? { status: "skipped", reason: batch.stopReason } : await this.correctFile(target, batch);
+        batch.results.push({ file: target.file, path: target.path, ...result });
         if (result.stopBatch) {
           batch.stopped = true;
-          batch.stopReason = `Stopped after ${path}: ${result.reason}`;
+          batch.stopReason = `Stopped after ${target.path}: ${result.reason}`;
         }
       }
     } finally {
@@ -3010,6 +3014,7 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
     const matchesOriginal = () => {
       const current = this.app.workspace.activeEditor;
       if ((current == null ? void 0 : current.file) !== file || current.editor !== editor || file.path !== filePath || editor.getValue() !== content) return false;
+      if (!hasSelection) return true;
       const from = editor.getCursor("from");
       const to = editor.getCursor("to");
       return from.line === range.from.line && from.ch === range.from.ch && to.line === range.to.line && to.ch === range.to.ch && editor.getSelection() === selection;
@@ -3039,29 +3044,36 @@ var CulebraSpellCorrectPlugin = class extends import_obsidian12.Plugin {
       }
     }, (result) => `${result.status}: ${result.reason}`);
   }
-  async correctFile(file, batch) {
-    const queued = await this.aiQueue.enqueue(`Correction for ${file.path}`, "", async (report2) => {
+  async correctFile({ file, path }, batch) {
+    const matchesTarget = () => file.path === path && this.app.vault.getAbstractFileByPath(path) === file;
+    const targetChanged = { status: "skipped", reason: "The original Markdown note is no longer at this path." };
+    const matchesOriginal = async (text) => matchesTarget() && await this.app.vault.read(file) === text && matchesTarget();
+    const queued = await this.aiQueue.enqueue(`Correction for ${path}`, "", async (report2) => {
       let chargeAttempted = false;
       try {
         if (batch == null ? void 0 : batch.stopped) return { status: "skipped", reason: batch.stopReason };
+        if (!matchesTarget()) return targetChanged;
         const originalText = await this.app.vault.read(file);
+        if (!matchesTarget()) return targetChanged;
         report2({ submittedText: originalText });
         const response = await this.correctText(originalText, report2);
         if (response.status !== "ready") return response;
         const correctedText = response.text;
-        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
+        if (!await matchesOriginal(originalText)) return { status: "skipped", reason: "The note changed during correction. Your edits were protected." };
         if (this.settings.reviewBeforeApply) report2({ label: "Waiting for your review" });
         if (this.settings.reviewBeforeApply && !await new CorrectionReviewModal(this.app, file.name, originalText, correctedText).waitForResult()) return { status: "skipped", reason: "Review cancelled. No charge or edit was made." };
-        if (await this.app.vault.read(file) !== originalText) return { status: "skipped", reason: "The note changed during review. Your edits were protected." };
+        if (!await matchesOriginal(originalText)) return { status: "skipped", reason: "The note changed during review. Your edits were protected." };
         report2({ label: "Confirming character usage" });
         chargeAttempted = true;
         if (!await this.chargeOneCredit(originalText.length)) return { status: "failed", reason: "Character usage could not be confirmed. No correction was applied. Resolve the account or pending charge before retrying.", stopBatch: true, retryable: false };
         let applied = false;
-        await this.app.vault.process(file, (current) => {
-          if (current !== originalText) return current;
-          applied = true;
-          return correctedText;
-        });
+        if (matchesTarget()) {
+          await this.app.vault.process(file, (current) => {
+            if (!matchesTarget() || current !== originalText) return current;
+            applied = true;
+            return correctedText;
+          });
+        }
         return applied ? { status: "applied", reason: "Correction applied." } : { status: "skipped", reason: "The note changed during billing. Your edits were protected. Contact support for a credit adjustment." };
       } catch (error) {
         diagnostics.failure("main.correctFile", error);
