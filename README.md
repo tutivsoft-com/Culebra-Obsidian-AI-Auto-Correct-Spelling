@@ -20,6 +20,10 @@ Account requests send authentication and billing information to Constance. Passw
 
 Uncertain older billing records are retained and are never replayed as new v2 charges. Connect the original account and contact support if an earlier operation needs recovery.
 
+## Release 4.4.104
+
+Improves settings and protects queued corrections when selected notes change. [Release on GitHub](https://github.com/tutivsoft-com/Culebra-Obsidian-AI-Auto-Correct-Spelling/releases/tag/4.4.104).
+
 ## Version 4.4.102
 
 Keep queued corrections bound to their original note and selection. Skip unchanged corrections.
